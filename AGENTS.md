@@ -4,7 +4,7 @@
 > **次目标**：可维护性、可测试性、回测可解释性同步提升
 > 适用项目：短线操作 v1（A 股 4 维评分短线筛选器）
 > 目的：让两个 AI 各专所长，1+1 > 2
-> 版本：v2 · 2026-06-07（v1 → v2: 加质量/Review/工具/目标/Spec维护）
+> 版本：v3 · 2026-06-08（v2 → v3: 加 §3.5 双向 Review 原则）
 
 ---
 
@@ -103,6 +103,24 @@ git diff HEAD~1            # 看上一个 commit 是谁改的、为啥
 ```
 
 下游 agent 接着干前，必读上游的 handoff note。
+
+### 3.5 双向 Review 原则（v3 新增）
+
+**默认**：上游 agent 的产出不是"扔过墙"——下游 agent 有权且应当 review + 直接修改。
+
+- **Claude 出 spec → Codex 接到后先 review 再写**，可以：
+  - 质疑前提 / 补边界 / 简化方案
+  - 直接改 spec 文件，commit 注明 `codex 改自 claude 初版`
+- **Codex 出代码 → Claude 接到后先 review 再合并**，可以：
+  - 改命名、抽函数、调风格、加 docstring / 类型
+  - 直接改代码文件，commit 注明 `claude review 后调整`
+
+**Why**：下游拿到的是文本不是语境，文本里能改的就改。**KISS > 礼让**。
+
+**How to apply**：
+- 收到对方交付，**默认动手 review**，不是"等用户点头"
+- 改动在 commit message body 写明 `modified by <agent>`
+- 改得"过头"（推翻主方案 / 删核心功能）→ 退回 + 沟通，**不悄悄改**
 
 ---
 
@@ -355,6 +373,7 @@ git status           # 确认 working tree 干净
 |------|------|------|
 | v1 | 2026-06-07 | 初版：双 agent 任务路由 + 交接协议 |
 | v2 | 2026-06-07 | 加 §10 质量/§11 Review/§12 工具/§13 目标/§14 Spec 维护/§3.4 Handoff |
+| v3 | 2026-06-08 | 加 §3.5 双向 Review 原则（下游 agent 可直接修改上游产出） |
 | v3 计划 | - | pytest 流程、5 维评分模板、回测 KPI 自动化 |
 
 ---

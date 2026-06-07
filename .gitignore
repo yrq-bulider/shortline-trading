@@ -1,0 +1,218 @@
+# ============================================================
+# 短线操作 v1 · .gitignore
+# ============================================================
+# 三类不进 git：
+#   1. 个人信息（绝密）  ：预测、历史评分、API key、账号、数据缓存
+#   2. 运行产物（动态）  ：HTML/CSV/JSON 报告、日志、扫描结果
+#   3. 环境垃圾（静态）  ：Python/IDE/OS/编辑器临时文件
+#
+# 验证规则生效：
+#   git check-ignore -v <file>
+
+# ============================================================
+# 1. 个人信息（绝密，最重要）
+# ============================================================
+# 当日预测 MD（统一放 短线操作md文档/）
+/短线操作md文档/
+*.短线操作.md
+# 历史评分、扫描结果、回测报告
+短线工具箱/历史评分.jsonl
+短线工具箱/筛选结果.csv
+短线工具箱/今日报告.html
+短线工具箱/回测报告.json
+短线工具箱/归因报告.json
+短线工具箱/表格/*.html
+# 兜底历史命名（根目录旧预测）
+[0-9].[0-9]*.md
+# 白名单（必须保留的 .md）
+!AGENTS.md
+!QUICKSTART.md
+!短线工具箱/README.md
+!短线工具箱/skill.md
+!短线工具箱/策略库/**
+
+# ============================================================
+# 2. 敏感凭证（绝密）
+# ============================================================
+.env
+.env.*
+*.env
+.envrc
+config.local.*
+local_settings.py
+*api_key*
+*api-key*
+*API_KEY*
+*token*
+*password*
+*secret*
+secrets.*
+credentials*
+*.pem
+*.key
+*.crt
+*.kubeconfig
+.netrc
+.git-credentials
+# SSH 私钥
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+# 数据源账号（akshare/baostock/通达信/同花顺等）
+*akshare*token*
+*baostock*password*
+*tongdaxin*
+*ths*
+
+# ============================================================
+# 3. Python 运行时垃圾
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+*.egg
+
+# ============================================================
+# 4. IDE / 编辑器
+# ============================================================
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+*.tmp
+*.bak
+*.orig
+*.rej
+.DS_Store
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+[Dd]esktop.ini
+*.lnk
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+nbproject/
+.metadata/
+.fuse_hidden*
+*.*~
+
+# ============================================================
+# 5. OS 临时文件
+# ============================================================
+# Windows
+$RECYCLE.BIN/
+System Volume Information/
+*.stackdump
+# Mac
+._*
+.Spotlight-V100/
+.Trashes/
+.fseventsd/
+# Linux
+.nfs*
+lost+found/
+
+# ============================================================
+# 6. Claude / Codex 本地状态（可能含路径/历史）
+# ============================================================
+.claude/settings.local.json
+.claude/agents/
+.claude/projects/
+.claude/sessions/
+.claude/tasks/
+.claude/statsig/
+# Codex CLI 本地状态
+.codex/
+.openai/
+.opencode/
+
+# ============================================================
+# 7. 数据库 / 数据缓存（可能含历史行情）
+# ============================================================
+*.sqlite
+*.sqlite3
+*.db
+*.pickle
+*.pkl
+*.parquet
+*.arrow
+*.feather
+*.h5
+*.hdf5
+.cache/
+.parcel-cache/
+.sass-cache/
+.next/
+.nuxt/
+.turbo/
+.vercel/
+downloads/
+tmp/
+temp/
+
+# ============================================================
+# 8. 日志（可能含路径/调试信息）
+# ============================================================
+*.log
+*.log.*
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pip-log.txt
+*.pid
+
+# ============================================================
+# 9. 旧备份（一次性 v1 备份）
+# ============================================================
+*_backup_*.py
+*_backup_*/
+*_old.*
+*.prev
+
+# ============================================================
+# 10. Jupyter / 交互式 notebook（以后可能用）
+# ============================================================
+.ipynb_checkpoints/
+*.ipynb
+profile_default/
+ipython_config.py
+
+# ============================================================
+# 11. 千万别忘的白名单
+# ============================================================
+# 这些文件必须提交，不要被前面规则误伤
+!.gitignore
+!AGENTS.md
+!QUICKSTART.md
+!requirements.txt
+!README.md
+!LICENSE
+!.github/

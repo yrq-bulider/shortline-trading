@@ -613,31 +613,20 @@ def get_capital_flow_score(code):
     table = _load_capital_flow_table()
 
     if not table:
-        try:
-            df_h = ak.stock_hsgt_individual_em(symbol=normalize_code(code))
-            if df_h is not None and not df_h.empty and len(df_h) >= 5:
-                l = float(df_h["持股数量"].iloc[-1])
-                p = float(df_h["持股数量"].iloc[-6])
-                r = l / p if p > 0 else 1
-                if r > 1.02: return 80, "北向增" + str(round((r-1)*100)) + "%"
-                elif r > 1.0: return 65, "北向微增" + str(round((r-1)*100, 1)) + "%"
-                elif r < 0.98: return 35, "北向减" + str(round((1-r)*100)) + "%"
-                else: return 50, "北向平稳"
-        except:
-            pass
-        try:
-            lhb_t = _load_lhb_table()
-            if lhb_t:
-                row_lhb = lhb_t.get(normalize_code(code))
-                if row_lhb:
-                    nc = next((k for k in row_lhb.keys() if "净买" in str(k)), None)
-                    if nc and pd.notna(row_lhb[nc]):
-                        n = float(row_lhb[nc])
-                        s = max(0, min(100, 50 + n / 1000000))
-                        return round(s), "龙虎净买" + str(round(n/10000)) + "万"
-                    return 70, "有上榜"
-        except:
-            pass
+        # v1.1.1 review：原 ab5093d 降级用 hsgt/lhb 与 news 维度双计（同一数据算两次分）。
+        # 改用 histories 已有的 amount 5 日均量比作资金动量代理，零额外 IO、与 hsgt/lhb 完全正交。
+        df = globals().get('histories', {}).get(code)
+        if df is not None and len(df) >= 6:
+            today_amt = float(df['amount'].iloc[-1])
+            avg_5d = float(df['amount'].iloc[-6:-1].mean())
+            if avg_5d > 0:
+                ratio = today_amt / avg_5d
+                if ratio >= 2.0:    return 85, f"放量{ratio:.1f}x"
+                elif ratio >= 1.5:  return 70, f"放量{ratio:.1f}x"
+                elif ratio >= 0.85: return 50, f"量平稳{ratio:.2f}x"
+                elif ratio >= 0.6:  return 35, f"缩量{ratio:.2f}x"
+                else:               return 20, f"严重缩量{ratio:.2f}x"
+        return 50, "资金流数据缺失"  # 完全没数据兜底
 
     row = table.get(normalize_code(code))
     if row is None:

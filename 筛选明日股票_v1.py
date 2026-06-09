@@ -56,7 +56,18 @@ TODAY = datetime.date.today()
 START_DATE = (TODAY - datetime.timedelta(days=120)).isoformat()
 TODAY_STR = TODAY.isoformat()
 PREDICTION_DIR = "短线操作md文档"  # 当日预测 MD 统一放这里（不进 git）
-HISTORY_FILE = "短线工具箱/历史评分.jsonl"  # 记录每日评分+次日实际涨跌
+HISTORY_FILE = "短线工具箱/历史评分.jsonl"
+def _latest_quarter_end():
+    m, y = TODAY.month, TODAY.year
+    if m <= 3:
+        return str(y-1) + "1231"
+    elif m <= 6:
+        return str(y) + "0331"
+    elif m <= 9:
+        return str(y) + "0630"
+    else:
+        return str(y) + "0930"
+  # 记录每日评分+次日实际涨跌
 
 # ============================================================
 # 【核心配置】交易模式：'T+1'（A股股票）或 'T+0'（ETF/可转债）
@@ -513,7 +524,7 @@ def _load_earnings_table():
         return _EARNINGS_CACHE
     _EARNINGS_LOADED = True  # 试过就标记，避免反复重试拖慢扫描
     try:
-        df = ak.stock_yjbb_em(date=TODAY_STR.replace('-', ''))
+        df = ak.stock_yjbb_em(date=_latest_quarter_end())
         if df is None or df.empty:
             print(f"[预拉] 业绩表为空（akshare返回空，维度分将拉平到50）")
             return _EARNINGS_CACHE
@@ -597,8 +608,34 @@ def get_capital_flow_score(code):
     if not HAS_AKSHARE:
         return 50, "akshare未安装"
     table = _load_capital_flow_table()
+
     if not table:
-        return 50, "无资金流数据"
+        try:
+            df_h = ak.stock_hsgt_individual_em(symbol=normalize_code(code))
+            if df_h is not None and not df_h.empty and len(df_h) >= 5:
+                l = float(df_h["持股数量"].iloc[-1])
+                p = float(df_h["持股数量"].iloc[-6])
+                r = l / p if p > 0 else 1
+                if r > 1.02: return 80, "北向增" + str(round((r-1)*100)) + "%"
+                elif r > 1.0: return 65, "北向微增" + str(round((r-1)*100, 1)) + "%"
+                elif r < 0.98: return 35, "北向减" + str(round((1-r)*100)) + "%"
+                else: return 50, "北向平稳"
+        except:
+            pass
+        try:
+            lhb_t = _load_lhb_table()
+            if lhb_t:
+                row_lhb = lhb_t.get(normalize_code(code))
+                if row_lhb:
+                    nc = next((k for k in row_lhb.keys() if "净买" in str(k)), None)
+                    if nc and pd.notna(row_lhb[nc]):
+                        n = float(row_lhb[nc])
+                        s = max(0, min(100, 50 + n / 1000000))
+                        return round(s), "龙虎净买" + str(round(n/10000)) + "万"
+                    return 70, "有上榜"
+        except:
+            pass
+
     row = table.get(normalize_code(code))
     if row is None:
         return 50, "未匹配到资金流"
@@ -627,6 +664,33 @@ KEYWORD_COLD = [
 ]
 
 
+_NOTICE_LOADED = False
+_NOTICE_CACHE = {}
+
+
+def _load_notice_table():
+    global _NOTICE_LOADED, _NOTICE_CACHE
+    if _NOTICE_LOADED:
+        return _NOTICE_CACHE
+    _NOTICE_LOADED = True
+    try:
+        temp = ak.stock_notice_report(date=TODAY_STR.replace('-', ''))
+        if temp is None or temp.empty:
+            print("[pre] notice empty")
+            return _NOTICE_CACHE
+        cc = next((c for c in temp.columns if "代码" in c), None)
+        if cc is None:
+            return _NOTICE_CACHE
+        for idx, row in temp.iterrows():
+            c6 = str(row[cc]).zfill(6)[-6:]
+            _NOTICE_CACHE.setdefault(c6, []).append(row.to_dict())
+        cnt = len(_NOTICE_CACHE)
+        print("[pre] notice " + str(len(temp)) + " rows, " + str(cnt) + " stocks")
+    except Exception as e:
+        print("[pre] notice fail: " + type(e).__name__)
+    return _NOTICE_CACHE
+
+
 @safe_score('公告失败', extras=([],))
 def get_ann_score(code, name):
     """公告子分 0-100（v1.1 拆出，便于 4 源融合复用）。
@@ -639,7 +703,7 @@ def get_ann_score(code, name):
     for attempt in [
         lambda: getattr(ak, 'stock_announcement_em', None) and ak.stock_announcement_em(symbol=code6),
         lambda: getattr(ak, 'stock_individual_notice_report', None) and ak.stock_individual_notice_report(security='股票', symbol=code6),
-        lambda: getattr(ak, 'stock_notice_report', None) and ak.stock_notice_report(symbol=code6),
+        lambda: _load_notice_table() and _NOTICE_CACHE.get(normalize_code(code)) and pd.DataFrame(_NOTICE_CACHE.get(normalize_code(code))),
     ]:
         try:
             result = attempt()

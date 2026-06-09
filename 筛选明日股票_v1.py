@@ -37,6 +37,8 @@ import datetime
 import json
 import os
 import functools
+import threading
+import queue
 from concurrent.futures import ThreadPoolExecutor
 warnings.filterwarnings('ignore')
 
@@ -110,9 +112,11 @@ def safe_score(label, extras=()):
     return deco
 
 
-def fetch_kline(code, start_date, end_date,
+def fetch_kline(code, start_date, end_date, bs=None,
                 fields="date,open,high,low,close,volume,amount", min_rows=0):
-    """单只股票拉 K 线，返回 DataFrame 或 None。调用方负责 bs.login()/logout()。"""
+    """单只股票拉 K 线，返回 DataFrame 或 None。bs 为 None 时用模块级默认 session。"""
+    if bs is None:
+        bs = globals().get('bs') or __import__('baostock')
     rs = bs.query_history_k_data_plus(
         code, fields,
         start_date=start_date, end_date=end_date,
@@ -140,9 +144,10 @@ def fetch_kline(code, start_date, end_date,
 # ============================================================
 MODE_CONFIGS = {
     'T+1': {
-        # T+1：隔夜风险大，业绩/资金/消息权重高，技术中等
-        # 核心思维：消息驱动+资金共识 = 隔夜发酵概率高
-        'weights': (0.30, 0.25, 0.20, 0.25),  # tech / earn / flow / news
+        # T+1：隔夜风险大，信息驱动+资金共识是核心 → 信息权重 35% 排第一
+        # v1.1 调整：tech 30→25 / earn 25→20 / flow 20 / news 25→35
+        # 配合 news 4 源融合（公告+新闻+北向+龙虎榜），信号更厚
+        'weights': (0.25, 0.20, 0.20, 0.35),  # tech / earn / flow / news
         'risk': {
             'NEXT_DAY_STOP_LOSS_PCT':   -0.05,  # 次日盘中触及-5%止损
             'NEXT_DAY_TAKE_PROFIT_PCT': 0.05,   # 次日+5%减半仓
@@ -265,8 +270,11 @@ df_filtered = df_ind[
     (~df_ind['industry'].isin(EXCLUDE_INDUSTRIES))
 ]
 print(f"过滤后: {len(df_filtered)} 只，覆盖 {df_filtered['industry'].nunique()} 个行业")
+# v1.1 修：原版按 code 升序遍历，sh 先填满 3 个名额导致 sz 几乎全被跳过（241 只里 sz 仅 18 只）
+# 改为按 industry 分组后组内打乱顺序再取 3 只 → sh/sz 按行业实际比例平衡，总数/耗时不变
 industry_groups = {}
-for _, row in df_filtered.iterrows():
+shuffled = df_filtered.sample(frac=1, random_state=42).reset_index(drop=True)
+for _, row in shuffled.iterrows():
     ind = row['industry']
     if ind not in industry_groups:
         industry_groups[ind] = []
@@ -289,6 +297,79 @@ def batch_get_history(codes, start_date=None, end_date=None, min_rows=60):
             results[code] = df
     bs.logout()
     return results
+
+
+# ============================================================
+# 【并发版】批量拉历史 K 线 —— 4 线程 + 限流 + 错误隔离
+# ============================================================
+# 设计要点（v1 → v1.1 提速改造 2026-06-09）：
+# 1) baostock 官方未承诺线程安全 → 每线程独立 login/logout 拿独立 token/socket
+# 2) 限流：0.15s sleep + 4 worker semaphore，避免高频触发反爬
+# 3) 错误隔离：单只失败只记 None，不拖死整批
+# 4) 进度聚合：主线程统一打印，避免 print 交错
+# 5) results 用 code 当 key，与原版接口一致
+_BS_THREAD_LOCAL = threading.local()
+
+def _worker_login():
+    """每个 worker 线程独立 login baostock。"""
+    import baostock as bs_local
+    bs_local.login()
+    _BS_THREAD_LOCAL.bs = bs_local
+    return bs_local
+
+def _fetch_with_own_session(code, start_date, end_date, min_rows, sleep_s):
+    """在调用线程内自己 login（lazy），拉一只票后 sleep 礼貌限流。"""
+    bs_local = getattr(_BS_THREAD_LOCAL, 'bs', None)
+    if bs_local is None:
+        bs_local = _worker_login()
+    try:
+        df = fetch_kline(code, start_date, end_date, bs=bs_local, min_rows=min_rows)
+    except Exception:
+        df = None
+    time.sleep(sleep_s)
+    return code, df
+
+def batch_get_history_concurrent(codes, start_date=None, end_date=None, min_rows=60,
+                                 max_workers=4, sleep_per_req=0.15, progress=True):
+    """并发批量拉 K 线。结果用 code 索引，缺失的票不在 dict 里（与原版语义一致）。"""
+    if start_date is None: start_date = START_DATE
+    if end_date is None: end_date = TODAY_STR
+    codes = list(codes)
+    total = len(codes)
+    results = {}
+    fail_log = []
+    t0 = time.time()
+
+    def _one(code):
+        return _fetch_with_own_session(code, start_date, end_date, min_rows, sleep_per_req)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(_one, code): code for code in codes}
+        done = 0
+        for fut in as_completed_iter(futures):
+            done += 1
+            try:
+                code, df = fut.result()
+                if df is not None:
+                    results[code] = df
+                else:
+                    fail_log.append(code)
+            except Exception:
+                fail_log.append(futures[fut])
+            if progress and (done % 20 == 0 or done == total):
+                print(f"  并发进度: {done}/{total}  已用时 {time.time()-t0:.1f}s", flush=True)
+
+    if progress:
+        print(f"  并发完成: 成功 {len(results)} / 失败 {len(fail_log)}  总耗时 {time.time()-t0:.1f}s")
+        if fail_log:
+            print(f"  失败列表(前10): {fail_log[:10]}")
+    return results
+
+
+def as_completed_iter(futures):
+    """as_completed 的薄封装，便于测试时 mock。"""
+    from concurrent.futures import as_completed
+    return as_completed(futures)
 
 
 # ============================================================
@@ -547,19 +628,32 @@ KEYWORD_COLD = [
 
 
 @safe_score('公告失败', extras=([],))
-def get_news_catalyst_score(code, name):
-    """
-    返回 (subscore 0-100, reason_str, hot_tags_list)
-    规则：扫描近30日公告，关键词加分/减分
-    基础分50 + 加分 - 减分，clamp到[0,100]
-    """
+def get_ann_score(code, name):
+    """公告子分 0-100（v1.1 拆出，便于 4 源融合复用）。
+    akshare 多版本兼容：尝试老接口 + 多个新接口名，全部失败兜底 50。"""
     if not HAS_AKSHARE:
         return 50, "akshare未安装", []
     code6 = normalize_code(code)
-    df = ak.stock_announcement_em(symbol=code6)
+    df = None
+    # 尝试多种 akshare 接口名（新旧版本）
+    for attempt in [
+        lambda: getattr(ak, 'stock_announcement_em', None) and ak.stock_announcement_em(symbol=code6),
+        lambda: getattr(ak, 'stock_individual_notice_report', None) and ak.stock_individual_notice_report(security='股票', symbol=code6),
+        lambda: getattr(ak, 'stock_notice_report', None) and ak.stock_notice_report(symbol=code6),
+    ]:
+        try:
+            result = attempt()
+            if result is not None and not result.empty:
+                df = result
+                break
+        except Exception:
+            continue
     if df is None or df.empty:
-        return 50, "无公告", []
-    titles = df['公告标题'].astype(str).head(30).tolist() if '公告标题' in df.columns else []
+        return 50, "公告接口暂不可用", []
+    title_col = next((c for c in df.columns if '标题' in c), None)
+    if title_col is None:
+        return 50, "无标题字段", []
+    titles = df[title_col].astype(str).head(30).tolist()
     if not titles:
         return 50, "无标题", []
     bonus = 0
@@ -573,13 +667,143 @@ def get_news_catalyst_score(code, name):
         for kw, score in KEYWORD_COLD:
             if kw in t:
                 bonus += score
-                hot_tags.append(f"⚠️{kw}")
+                hot_tags.append(f"!{kw}")
                 break
     bonus = min(bonus, 60)
     bonus = max(bonus, -50)
     final = max(0, min(100, 50 + bonus))
     unique_tags = list(set(hot_tags))[:5]
     return final, f"公告{len(titles)}条,催化{'+'.join(unique_tags[:3]) if unique_tags else '无'}", unique_tags
+
+
+# v1.1 新增：新闻情感关键词（4 源融合用）
+NEWS_HOT = ['利好', '突破', '增长', '中标', '签约', '订单', '获批', '提速', '受益', '扩产', '投产', '创新高']
+NEWS_COLD = ['下滑', '亏损', '下调', '降级', '处罚', '问询', '退市', '诉讼', '资金出逃', '业绩雷']
+
+
+@safe_score('新闻失败')
+def get_newsfeed_score(code, name):
+    """个股新闻子分 0-100。ak.stock_news_em 拉近 N 条新闻，关键词情感。"""
+    if not HAS_AKSHARE:
+        return 50, "akshare未安装"
+    try:
+        df = ak.stock_news_em(symbol=normalize_code(code))
+    except Exception as e:
+        return 50, f"新闻拉取失败:{type(e).__name__}"
+    if df is None or df.empty:
+        return 50, "无新闻"
+    title_col = next((c for c in df.columns if '标题' in c), None)
+    if title_col is None:
+        return 50, "无标题字段"
+    titles = df[title_col].astype(str).tolist()[:10]
+    if not titles:
+        return 50, "无标题"
+    bonus = 0
+    for t in titles:
+        for kw in NEWS_HOT:
+            if kw in t:
+                bonus += 8
+                break
+        for kw in NEWS_COLD:
+            if kw in t:
+                bonus -= 10
+                break
+    bonus = max(-50, min(50, bonus))
+    final = max(0, min(100, 50 + bonus))
+    return final, f"新闻{len(titles)}条,情感{'+' if bonus>0 else ''}{bonus}"
+
+
+@safe_score('北向失败')
+def get_hsgt_score(code):
+    """北向资金 5 日净流入子分 0-100。"""
+    if not HAS_AKSHARE:
+        return 50, "akshare未安装"
+    try:
+        df = ak.stock_hsgt_individual_em(symbol=normalize_code(code))
+    except Exception as e:
+        return 50, f"北向拉取失败:{type(e).__name__}"
+    if df is None or df.empty or len(df) < 5:
+        return 50, "北向数据不足"
+    flow_col = next((c for c in df.columns if '资金' in c and '今日' in c), None)
+    if flow_col is None:
+        return 50, "无资金流字段"
+    flow_5d = df[flow_col].head(5).sum()  # 单位：元（A 股个股 5 日净流入通常 ±1 亿）
+    score = 50 + flow_5d / 100000000 * 40  # 1 亿净流入对应 +40 分，-1 亿对应 -40 分
+    score = max(0, min(100, round(score)))
+    direction = "流入" if flow_5d > 0 else "流出"
+    return score, f"5日北向{direction}{abs(flow_5d)/100000000:.2f}亿"
+
+
+# 龙虎榜全市场缓存（v1.1 新增）
+_LHB_LOADED = False
+_LHB_CACHE = {}
+
+
+def _load_lhb_table():
+    """预拉全市场近 1 月龙虎榜表。ak.stock_lhb_stock_statistic_em 一次返回 811 条。"""
+    global _LHB_LOADED, _LHB_CACHE
+    if _LHB_LOADED:
+        return _LHB_CACHE
+    _LHB_LOADED = True
+    try:
+        df = ak.stock_lhb_stock_statistic_em(symbol='近一月')
+        if df is None or df.empty:
+            print('[预拉] 龙虎榜表为空')
+            return _LHB_CACHE
+        code_col = next((c for c in df.columns if '代码' in c), df.columns[0])
+        df['_code6'] = df[code_col].astype(str).str.zfill(6)
+        for c6, row in df.set_index('_code6').iterrows():
+            _LHB_CACHE[c6] = row.to_dict()
+        print(f'[预拉] 龙虎榜表 {len(_LHB_CACHE)} 条')
+    except Exception as e:
+        print(f'[预拉] 龙虎榜表失败: {type(e).__name__}（建议稍后重跑）')
+    return _LHB_CACHE
+
+
+@safe_score('龙虎失败')
+def get_lhb_score(code):
+    """龙虎榜子分 0-100。近 1 月内上榜过 + 净买入额 → 映射。"""
+    table = _load_lhb_table()
+    code6 = normalize_code(code)
+    row = table.get(code6)
+    if row is None:
+        return 50, "近1月未上榜"
+    net_buy_col = next((k for k in row.keys() if '净买' in str(k)), None)
+    if net_buy_col and pd.notna(row[net_buy_col]):
+        net_buy = float(row[net_buy_col])  # 元
+        score = 50 + net_buy / 1000000  # 100 万对应 1 分
+        score = max(0, min(100, round(score)))
+        return score, f"龙虎榜净买{net_buy/10000:.0f}万"
+    return 70, "近1月有上榜"  # 有记录但取不到净买额
+
+
+# 4 源融合权重（v1.1 新增）
+NEWS_SUB_WEIGHTS = {'ann': 0.30, 'newsfeed': 0.30, 'hsgt': 0.20, 'lhb': 0.20}
+
+
+@safe_score('信息失败', extras=([],))
+def get_news_catalyst_score(code, name):
+    """
+    v1.1 重构：4 源融合
+    总分 = 公告(30%) + 新闻(30%) + 北向(20%) + 龙虎榜(20%)
+    单源失败时该源按 50 中性化，不影响总分结构。
+    """
+    ann_sub, ann_reason, ann_tags = get_ann_score(code, name)
+    nf_sub, nf_reason = get_newsfeed_score(code, name)
+    hsgt_sub, hsgt_reason = get_hsgt_score(code)
+    lhb_sub, lhb_reason = get_lhb_score(code)
+
+    total = (ann_sub * NEWS_SUB_WEIGHTS['ann'] +
+             nf_sub  * NEWS_SUB_WEIGHTS['newsfeed'] +
+             hsgt_sub * NEWS_SUB_WEIGHTS['hsgt'] +
+             lhb_sub  * NEWS_SUB_WEIGHTS['lhb'])
+    total = round(total, 1)
+
+    reason = (f"公告{ann_sub}({ann_reason})|"
+              f"新闻{nf_sub}({nf_reason})|"
+              f"北向{hsgt_sub}({hsgt_reason})|"
+              f"龙虎{lhb_sub}({lhb_reason})")
+    return total, reason, ann_tags
 
 
 # ============================================================
@@ -719,17 +943,30 @@ def backtest_score_history(days_back=20):
                 if rec_price <= 0:
                     continue
                 if code not in cache:
-                    try:
-                        df = fetch_kline(code, next_date,
-                                         (d + datetime.timedelta(days=2)).isoformat(),
-                                         fields="date,open,close")
-                        if df is not None and not df.empty:
+                    # v1.1 优化：主扫已拉 120 天 K 线到 histories[code]，直接复用 3 天窗口
+                    # 避免 backtest 段对同一只票重复发 baostock 请求（days_back×top3 次冗余 fetch）
+                    if code in histories:
+                        sub = histories[code]
+                        end_dt = pd.Timestamp(next_date) + datetime.timedelta(days=2)
+                        sub = sub[(sub['date'] >= pd.Timestamp(next_date)) & (sub['date'] <= end_dt)]
+                        if not sub.empty:
                             cache[code] = {row['date'].strftime('%Y-%m-%d'): (float(row['open']), float(row['close']))
-                                           for _, row in df.iterrows()}
+                                           for _, row in sub.iterrows()}
                         else:
                             cache[code] = {}
-                    except Exception:
-                        cache[code] = {}
+                    else:
+                        # 兜底：这只票没在主扫池里（如 6/8 之前历史 top3 已退市）
+                        try:
+                            df = fetch_kline(code, next_date,
+                                             (d + datetime.timedelta(days=2)).isoformat(),
+                                             fields="date,open,close")
+                            if df is not None and not df.empty:
+                                cache[code] = {row['date'].strftime('%Y-%m-%d'): (float(row['open']), float(row['close']))
+                                               for _, row in df.iterrows()}
+                            else:
+                                cache[code] = {}
+                        except Exception:
+                            cache[code] = {}
                 day_data = cache[code].get(next_date)
                 if day_data is None:
                     # 找不到次日（可能停牌或数据延迟）
@@ -739,7 +976,8 @@ def backtest_score_history(days_back=20):
                 day_ret = (next_close - rec_price) / rec_price * 100
                 detailed.append({
                     'rec_date': rec_date, 'code': code, 'name': stock['name'],
-                    'composite': composite, 'rec_price': rec_price,
+                    'composite': composite, 'subscores': stock.get('subscores', {}),
+                    'rec_price': rec_price,
                     'next_open': next_open, 'next_close': next_close,
                     'gap_ret': round(gap_ret, 2), 'day_ret': round(day_ret, 2),
                 })
@@ -814,7 +1052,7 @@ def print_backtest_report(report):
         print("\n[回测] 暂无历史数据（需要先跑几次扫描积累评分）")
         return
     print("\n" + "=" * 70)
-    print(f"  📊 4维评分体系回测报告（近{report['days_back']}天）")
+    print(f"  [回测] 4维评分体系回测报告（近{report['days_back']}天）")
     print("=" * 70)
     print(f"  样本数:        {report['total_trades']} 笔")
     print(f"  胜率:          {report['win_rate']}%")
@@ -829,7 +1067,7 @@ def print_backtest_report(report):
         print(f"  {bucket:<10}{s['count']:<6}{s['win_rate']}%{'':<3}{s['avg_ret']:+}%{'':<6}+{s['max_win']}%{'':<5}{s['max_loss']}%")
     print()
     if report['recommendations']:
-        print("  💡 调参建议：")
+        print("  [建议] 调参建议：")
         for r in report['recommendations']:
             print(f"     - {r}")
     print("=" * 70)
@@ -870,7 +1108,7 @@ def backtest_dimension_attribution(report):
     for dim in dimensions:
         scores = np.array([t['subscores'][dim] for t in detailed])
         if scores.std() == 0:
-            correlations[dim] = {'corr': 0, 'practical': '无变化', 'win_diff': 0}
+            correlations[dim] = {'corr': 0, 'high_win': 0, 'low_win': 0, 'win_diff': 0, 'practical': '无变化'}
             continue
         corr = float(np.corrcoef(scores, rets)[0, 1])
         # 实际区分度：高分组 vs 低分组的胜率差
@@ -888,7 +1126,7 @@ def backtest_dimension_attribution(report):
         elif abs(corr) >= 0.15 or win_diff >= 10:
             practical = '中等有效'
         elif abs(corr) < 0.05 and abs(win_diff) < 5:
-            practical = '⚠️ 噪声'
+            practical = '! 噪声'
         else:
             practical = '弱有效'
         correlations[dim] = {
@@ -924,7 +1162,7 @@ def backtest_dimension_attribution(report):
     # ---- 3) 自动调参建议 ----
     recommendations = []
     # 按 practical 强度排序
-    rank_order = {'强有效': 3, '中等有效': 2, '弱有效': 1, '⚠️ 噪声': 0}
+    rank_order = {'强有效': 3, '中等有效': 2, '弱有效': 1, '! 噪声': 0, '无变化': 0}
     ranked_dims = sorted(dimensions, key=lambda d: rank_order[correlations[d]['practical']], reverse=True)
     best = ranked_dims[0]
     worst = ranked_dims[-1]
@@ -937,7 +1175,7 @@ def backtest_dimension_attribution(report):
             f"维度「{dim_name_cn(best)}」相关性{correlations[best]['corr']}，胜率差{win_diff_cn(best_corr)}，建议权重提升5-10%"
         )
     # 降低最弱维度的权重
-    if worst_corr['practical'] == '⚠️ 噪声':
+    if worst_corr['practical'] == '! 噪声':
         recommendations.append(
             f"维度「{dim_name_cn(worst)}」相关性近0、胜率差仅{worst_corr['win_diff']}%，判定为噪声，建议权重降到5%以下"
         )
@@ -988,7 +1226,7 @@ def print_attribution_report(attr):
         return
 
     print("\n" + "=" * 75)
-    print(f"  🔬 4维评分归因分析（样本{attr['sample_size']}笔）")
+    print(f"  [归因] 4维评分归因分析（样本{attr['sample_size']}笔）")
     print("=" * 75)
 
     # 相关性表
@@ -1010,7 +1248,7 @@ def print_attribution_report(attr):
         print(f"  {name:<14}{s['chosen']:<6}{s['win_rate']}%{'':<5}{s['avg_ret']:+}%{marker}")
 
     # 建议
-    print("\n  💡 自动调参建议：")
+    print("\n  [建议] 自动调参建议：")
     for r in attr['recommendations']:
         print(f"     • {r}")
     print("=" * 75)
@@ -1065,13 +1303,13 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
         recs_html = "".join(f"<li>{r}</li>" for r in backtest['recommendations'])
         bt_html = f"""
 <div class="section">
-  <h2>📊 历史回测（近{backtest['days_back']}天）</h2>
+  <h2>[回测] 历史回测（近{backtest['days_back']}天）</h2>
   <p><b>样本数：</b>{backtest['total_trades']} | <b>胜率：</b>{backtest['win_rate']}% | <b>均收益：</b>{backtest['avg_return']:+.2f}% | <b>最大亏损：</b>{backtest['max_loss']}%</p>
   <table>
     <tr><th>分桶</th><th>样本</th><th>胜率</th><th>均收益</th><th>最大盈利</th><th>最大亏损</th></tr>
     {bucket_rows}
   </table>
-  <h3>💡 调参建议</h3>
+  <h3>[建议] 调参建议</h3>
   <ul>{recs_html}</ul>
 </div>"""
 
@@ -1089,7 +1327,7 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
         attr_recs = "".join(f"<li>{r}</li>" for r in attribution['recommendations'])
         attr_html = f"""
 <div class="section">
-  <h2>🔬 4维归因分析（4维评分是否真的有效？）</h2>
+  <h2>[归因] 4维归因分析（4维评分是否真的有效？）</h2>
   <p><b>样本：</b>{attribution['sample_size']} 笔 | 相关性 > 0.2 = 强有效，< 0.1 = 噪声</p>
   <h3>子分 vs 收益 相关性 + 胜率区分度</h3>
   <table>
@@ -1101,7 +1339,7 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
     <tr><th>策略</th><th>样本</th><th>胜率</th><th>均收益</th></tr>
     {abl_rows}
   </table>
-  <h3>💡 自动调参建议</h3>
+  <h3>[建议] 自动调参建议</h3>
   <ul>{attr_recs}</ul>
 </div>"""
 
@@ -1131,17 +1369,17 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
 </head>
 <body>
 <div class="header">
-  <h1>📈 短线操作报告 · {TODAY_STR}</h1>
+  <h1>[报告] 短线操作报告 · {TODAY_STR}</h1>
   <div class="meta">模式：{TRADING_MODE} | 大盘：{market_info['rating']} | 扫描 {len(results)} 只 | 资金 {CAPITAL}元</div>
 </div>
 
 <div class="section">
-  <h2>🎯 TOP3 推荐（{TRADING_MODE}模式）</h2>
+  <h2>[推荐] TOP3 推荐（{TRADING_MODE}模式）</h2>
   {top3_html}
 </div>
 
 <div class="section">
-  <h2>📋 扫描结果前 20</h2>
+  <h2>[扫描] 扫描结果前 20</h2>
   <table>
     <tr><th>#</th><th>代码/名称</th><th>行业</th><th>综合分</th><th>价格</th><th>技术</th><th>业绩</th><th>资金</th><th>消息</th><th>信号</th></tr>
     {rows_html}
@@ -1153,13 +1391,13 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
 {attr_html}
 
 <div class="section">
-  <h2>🔁 近3日推荐回顾</h2>
+  <h2>[回顾] 近3日推荐回顾</h2>
   <ul>{recos_html if recos_html else '<li>无</li>'}</ul>
 </div>
 
 <div class="section small">
   <p>生成时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 筛选器 v1.0 4维评分 · {TRADING_MODE}</p>
-  <p>⚠️ 本报告基于历史数据和技术指标，不构成投资建议</p>
+  <p>! 本报告基于历史数据和技术指标，不构成投资建议</p>
 </div>
 
 </body>
@@ -1500,7 +1738,7 @@ if results:
     signal_rows = []
     for r in results:
         ind = r['indicators']
-        macd_ok = "✅" if (ind['macd_bar'] and ind['macd_bar'] > 0) else "❌"
+        macd_ok = "OK" if (ind['macd_bar'] and ind['macd_bar'] > 0) else "--"
         sig = '/'.join(r['signals'])
         signal_rows.append(
             f"| {r['code']} | {r['name']} | {r['composite']} | {r['price']:.2f} | {sig} | {macd_ok} |"
@@ -1517,8 +1755,8 @@ if results:
         buy_low = round(r['price'] * 0.97, 2)
         buy_high = round(r['price'] * 1.02, 2)
         position_amt = int(CAPITAL * r['position_pct'] / 100 / r['price']) * r['price']
-        rsi_ok = "✅" if (ind['rsi'] and ind['rsi'] <= 70) else "⚠️"
-        macd_ok = "✅" if (ind['macd_bar'] and ind['macd_bar'] > 0) else "❌"
+        rsi_ok = "OK" if (ind['rsi'] and ind['rsi'] <= 70) else "!"
+        macd_ok = "OK" if (ind['macd_bar'] and ind['macd_bar'] > 0) else "--"
         bb_u = f"{ind['bb_upper']:.2f}" if ind['bb_upper'] else "N/A"
         bb_m = f"{ind['bb_mid']:.2f}" if ind['bb_mid'] else "N/A"
         bb_l = f"{ind['bb_lower']:.2f}" if ind['bb_lower'] else "N/A"
@@ -1566,7 +1804,7 @@ if results:
     other_rows = ""
     for r in others:
         ind = r['indicators']
-        macd_ok = "✅" if (ind['macd_bar'] and ind['macd_bar'] > 0) else "❌"
+        macd_ok = "OK" if (ind['macd_bar'] and ind['macd_bar'] > 0) else "--"
         s = r['subscores']
         other_rows += f"| {r['code']} | {r['name']} | {r['composite']} | {r['price']:.2f} | {s['earn']} | {s['flow']} | {s['news']} | {macd_ok} |\n"
 
@@ -1836,7 +2074,7 @@ T+0 = 当日可买卖，无隔夜风险，但**没有时间等你"想清楚"**�
 
     # 总结
     print("\n" + "=" * 60)
-    print("✅ 全部完成！")
+    print("[完成] 全部完成！")
     print("=" * 60)
     print(f"  扫描结果:    短线工具箱/筛选结果.csv")
     print(f"  操作计划:    {NEXT_DAY_FILE}")

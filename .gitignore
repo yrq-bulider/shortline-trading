@@ -24,6 +24,8 @@
 短线工具箱/表格/*.html
 # 兜底历史命名（根目录旧预测）
 [0-9].[0-9]*.md
+# 双 agent 协作日志（本地白板，仅根目录限定）
+/AGENT_LOG.md
 # 白名单（必须保留的 .md）
 !AGENTS.md
 !QUICKSTART.md

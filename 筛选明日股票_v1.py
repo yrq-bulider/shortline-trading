@@ -43,13 +43,20 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 # akshare wrapper
-import importlib.util
-_s = importlib.util.spec_from_file_location("r",
+import importlib.util as _ilu
+_res_spec = _ilu.spec_from_file_location("akshare_resilient",
     __file__.replace("筛选明日股票_v1.py", "短线工具箱/akshare_resilient.py"))
-_m = importlib.util.module_from_spec(_s)
-_s.loader.exec_module(_m)
-for _k in ["fetch_earnings","fetch_notice","fetch_lhb","fetch_fund_flow_rank","fetch_hsgt","fetch_news"]:
-    locals()[_k] = getattr(_m, _k)
+_res_mod = _ilu.module_from_spec(_res_spec)
+_res_spec.loader.exec_module(_res_mod)
+for _k in ["fetch_earnings","fetch_notice","fetch_lhb","fetch_fund_flow_rank","fetch_hsgt","fetch_news"]: locals()[_k] = getattr(_res_mod, _k)
+
+# scorer module (pure algorithm functions)
+_sco_spec = _ilu.spec_from_file_location("scorer",
+    os.path.join(os.path.dirname(__file__), "短线工具箱", "scorer.py"))
+_sco_mod = _ilu.module_from_spec(_sco_spec)
+_sco_spec.loader.exec_module(_sco_mod)
+for _sn in ["init_mode_config","safe_score","composite_score","dynamic_position_pct","WEIGHT_TECH","WEIGHT_EARN","WEIGHT_FLOW","WEIGHT_NEWS","POSITION_TIERS","MARKET_POSITION_CAP"]: locals()[_sn] = getattr(_sco_mod, _sn)
+
 
 warnings.filterwarnings('ignore')
 
@@ -59,17 +66,6 @@ try:
     HAS_AKSHARE = True
 except ImportError:
     HAS_AKSHARE = False
-    print("[警告] 未安装akshare，业绩/资金/消息维度将自动降级（仅技术面）")
-
-# ===== 动态日期 =====
-TODAY = datetime.date.today()
-# 120 天足够覆盖最大回看（risk_stars 用 c[-60:]）+ 节假日缓冲；原 180 天有 33% 的多余数据拉取
-START_DATE = (TODAY - datetime.timedelta(days=120)).isoformat()
-TODAY_STR = TODAY.isoformat()
-PREDICTION_DIR = "短线操作md文档"  # 当日预测 MD 统一放这里（不进 git）
-HISTORY_FILE = "短线工具箱/历史评分.jsonl"  # 记录每日评分+次日实际涨跌
-
-
 def _latest_quarter_end():
     """返回最近完整季度末日期字符串（YYYYMMDD），用于 akshare 业绩查询参数。
     如 6/9 调用 → '20260331'（Q1 末），9/15 → '20250630'（半年末）。"""
@@ -119,21 +115,7 @@ def normalize_code(code):
     return s.split('.')[-1] if '.' in s else s
 
 
-def safe_score(label, extras=()):
-    """评分函数统一异常兜底装饰器
 
-    业绩/资金/消息维度都有 try/except → return 50, '...' 的重复模板。
-    extras 用于消息维度需要返回空 list 的情况：@safe_score('公告失败', extras=([],))
-    """
-    def deco(fn):
-        @functools.wraps(fn)
-        def wrap(*args, **kwargs):
-            try:
-                return fn(*args, **kwargs)
-            except Exception as e:
-                err = f"{label}:{type(e).__name__}"
-                return (50, err) + tuple(extras)
-        return wrap
     return deco
 
 
@@ -167,61 +149,7 @@ def fetch_kline(code, start_date, end_date, bs=None,
 # ============================================================
 # 【模式配置】权重 + 风险参数 单一来源
 # ============================================================
-MODE_CONFIGS = {
-    'T+1': {
-        # T+1：隔夜风险大，信息驱动+资金共识是核心 → 信息权重 35% 排第一
-        # v1.1 调整：tech 30→25 / earn 25→20 / flow 20 / news 25→35
-        # 配合 news 4 源融合（公告+新闻+北向+龙虎榜），信号更厚
-        'weights': (0.25, 0.20, 0.20, 0.35),  # tech / earn / flow / news
-        'risk': {
-            'NEXT_DAY_STOP_LOSS_PCT':   -0.05,  # 次日盘中触及-5%止损
-            'NEXT_DAY_TAKE_PROFIT_PCT': 0.05,   # 次日+5%减半仓
-            'FORCE_CLEAR_PCT':          -0.03,  # 次日开盘<-3%直接出
-            'OPEN_GAP_HIGH':            0.02,   # 次日高开>+2%：减半锁利
-            'OPEN_GAP_LOW':             -0.02,  # 次日低开<-2%：放弃/止损
-            'HOLD_PERIOD_DESC':         "次日9:25-9:45分情景应对",
-        },
-    },
-    'T+0': {
-        # T+0：日内博弈，技术精准度=命，消息催化次日才反应
-        'weights': (0.50, 0.15, 0.25, 0.10),
-        'risk': {
-            'INTRADAY_STOP_LOSS_PCT':   -0.015,  # 日内-1.5%即止损
-            'INTRADAY_TAKE_PROFIT_PCT': 0.02,    # 日内+2%先减半
-            'FORCE_CLEAR_TIME':         "14:30", # 尾盘强制清仓
-            'TRAILING_STOP_PCT':        0.01,    # 移动止盈1%
-            'HOLD_PERIOD_DESC':         "当日9:30-14:30分时波段",
-        },
-    },
-}
-
-
-def init_mode_config(mode):
-    """根据交易模式设置模块级权重 / 风险参数。模块加载时和 CLI 覆盖时都会调用。"""
-    cfg = MODE_CONFIGS[mode]
-    global WEIGHT_TECH, WEIGHT_EARN, WEIGHT_FLOW, WEIGHT_NEWS
-    WEIGHT_TECH, WEIGHT_EARN, WEIGHT_FLOW, WEIGHT_NEWS = cfg['weights']
-    globals().update(cfg['risk'])
-
-
-init_mode_config(TRADING_MODE)
-
-# 【仓位档位】综合分 → 仓位 %  单一来源
-# 按 (最低分, 仓位%) 倒序排列，第一档命中即返回
-POSITION_TIERS = [
-    (85, 40),  # 高分：重仓
-    (75, 25),  # 良好：标配
-    (65, 15),  # 中等：轻仓
-    (55, 10),  # 弱信号：观察仓
-    (0,  0),   # 不及格：不买
-]
-MARKET_POSITION_CAP = {
-    '积极': 1.0, '稳健': 1.0, '谨慎': 0.7, '观望': 0.4,
-}
-
-# ============================================================
-# 大盘指数分析（同v0.3）
-# ============================================================
+# MODE_CONFIGS imported from 短线工具箱.scorer
 def get_index_data():
     indices = {
         'sh.000001': '上证指数',
@@ -905,20 +833,6 @@ def get_sector_rotation_score(industry, all_industry_data):
 # ============================================================
 # 4维综合评分
 # ============================================================
-def composite_score(tech, earn, flow, news, weights=(WEIGHT_TECH, WEIGHT_EARN, WEIGHT_FLOW, WEIGHT_NEWS)):
-    return round(tech * weights[0] + earn * weights[1] + flow * weights[2] + news * weights[3], 1)
-
-
-def dynamic_position_pct(score, market_level):
-    """
-    按综合分 + 大盘环境分配仓位（百分比）
-    大盘=观望时，仓位上限压低
-    """
-    base = next(pct for threshold, pct in POSITION_TIERS if score >= threshold)
-    cap = MARKET_POSITION_CAP.get(market_level, 0.7)
-    return round(base * cap)
-
-
 # ============================================================
 # 【新】智能去重：防"信号耗尽"重复推荐
 # ============================================================
@@ -1543,7 +1457,8 @@ def stars_display(n):
 ARGS = parse_args()
 if ARGS.trading_mode:
     TRADING_MODE = ARGS.trading_mode
-    init_mode_config(TRADING_MODE)
+    risk_params = init_mode_config(TRADING_MODE)
+globals().update(risk_params)
 
 print(f"运行模式: {ARGS.mode} | 交易模式: {TRADING_MODE} | 回测天数: {ARGS.days}")
 

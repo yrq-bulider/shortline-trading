@@ -40,6 +40,17 @@ import functools
 import threading
 import queue
 from concurrent.futures import ThreadPoolExecutor
+
+
+# akshare wrapper
+import importlib.util
+_s = importlib.util.spec_from_file_location("r",
+    __file__.replace("筛选明日股票_v1.py", "短线工具箱/akshare_resilient.py"))
+_m = importlib.util.module_from_spec(_s)
+_s.loader.exec_module(_m)
+for _k in ["fetch_earnings","fetch_notice","fetch_lhb","fetch_fund_flow_rank","fetch_hsgt","fetch_news"]:
+    locals()[_k] = getattr(_m, _k)
+
 warnings.filterwarnings('ignore')
 
 # akshare 软依赖：缺则降级（只用技术层）
@@ -527,7 +538,7 @@ def _load_earnings_table():
         return _EARNINGS_CACHE
     _EARNINGS_LOADED = True  # 试过就标记，避免反复重试拖慢扫描
     try:
-        df = ak.stock_yjbb_em(date=_latest_quarter_end())
+        df = fetch_earnings()
         if df is None or df.empty:
             print(f"[预拉] 业绩表为空（akshare返回空，维度分将拉平到50）")
             return _EARNINGS_CACHE
@@ -589,7 +600,7 @@ def _load_capital_flow_table():
         return _CAPITAL_FLOW_CACHE
     _CAPITAL_FLOW_LOADED = True
     try:
-        df = ak.stock_individual_fund_flow_rank(indicator="5日")
+        df = fetch_fund_flow_rank()
         if df is None or df.empty:
             print(f"[预拉] 资金流表为空（akshare返回空，维度分将拉平到50）")
             return _CAPITAL_FLOW_CACHE
@@ -668,7 +679,7 @@ def _load_notice_table():
         return _NOTICE_CACHE
     _NOTICE_LOADED = True
     try:
-        temp = ak.stock_notice_report(date=TODAY_STR.replace('-', ''))
+        temp = fetch_notice()
         if temp is None or temp.empty:
             print('[预拉] 公告表为空')
             return _NOTICE_CACHE
@@ -744,7 +755,7 @@ def get_newsfeed_score(code, name):
     if not HAS_AKSHARE:
         return 50, "akshare未安装"
     try:
-        df = ak.stock_news_em(symbol=normalize_code(code))
+        df = fetch_news(symbol=normalize_code(code))
     except Exception as e:
         return 50, f"新闻拉取失败:{type(e).__name__}"
     if df is None or df.empty:
@@ -776,7 +787,7 @@ def get_hsgt_score(code):
     if not HAS_AKSHARE:
         return 50, "akshare未安装"
     try:
-        df = ak.stock_hsgt_individual_em(symbol=normalize_code(code))
+        df = fetch_hsgt(symbol=normalize_code(code))
     except Exception as e:
         return 50, f"北向拉取失败:{type(e).__name__}"
     if df is None or df.empty or len(df) < 5:
@@ -803,7 +814,7 @@ def _load_lhb_table():
         return _LHB_CACHE
     _LHB_LOADED = True
     try:
-        df = ak.stock_lhb_stock_statistic_em(symbol='近一月')
+        df = fetch_lhb()
         if df is None or df.empty:
             print('[预拉] 龙虎榜表为空')
             return _LHB_CACHE

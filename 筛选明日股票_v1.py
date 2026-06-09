@@ -56,18 +56,21 @@ TODAY = datetime.date.today()
 START_DATE = (TODAY - datetime.timedelta(days=120)).isoformat()
 TODAY_STR = TODAY.isoformat()
 PREDICTION_DIR = "短线操作md文档"  # 当日预测 MD 统一放这里（不进 git）
-HISTORY_FILE = "短线工具箱/历史评分.jsonl"
+HISTORY_FILE = "短线工具箱/历史评分.jsonl"  # 记录每日评分+次日实际涨跌
+
+
 def _latest_quarter_end():
+    """返回最近完整季度末日期字符串（YYYYMMDD），用于 akshare 业绩查询参数。
+    如 6/9 调用 → '20260331'（Q1 末），9/15 → '20250630'（半年末）。"""
     m, y = TODAY.month, TODAY.year
     if m <= 3:
-        return str(y-1) + "1231"
+        return f"{y-1}1231"  # 去年年报
     elif m <= 6:
-        return str(y) + "0331"
+        return f"{y}0331"     # 今年一季报
     elif m <= 9:
-        return str(y) + "0630"
+        return f"{y}0630"     # 今年半年报
     else:
-        return str(y) + "0930"
-  # 记录每日评分+次日实际涨跌
+        return f"{y}0930"     # 今年三季报
 
 # ============================================================
 # 【核心配置】交易模式：'T+1'（A股股票）或 'T+0'（ETF/可转债）
@@ -669,6 +672,8 @@ _NOTICE_CACHE = {}
 
 
 def _load_notice_table():
+    """预拉全市场当日公告表（~700 条）按 code6 缓存，单只票本地过滤。
+    替代 stock_individual_notice_report(symbol=X)（新版 akshare 不支持单票查询）。"""
     global _NOTICE_LOADED, _NOTICE_CACHE
     if _NOTICE_LOADED:
         return _NOTICE_CACHE
@@ -676,18 +681,17 @@ def _load_notice_table():
     try:
         temp = ak.stock_notice_report(date=TODAY_STR.replace('-', ''))
         if temp is None or temp.empty:
-            print("[pre] notice empty")
+            print('[预拉] 公告表为空')
             return _NOTICE_CACHE
         cc = next((c for c in temp.columns if "代码" in c), None)
         if cc is None:
             return _NOTICE_CACHE
-        for idx, row in temp.iterrows():
-            c6 = str(row[cc]).zfill(6)[-6:]
-            _NOTICE_CACHE.setdefault(c6, []).append(row.to_dict())
-        cnt = len(_NOTICE_CACHE)
-        print("[pre] notice " + str(len(temp)) + " rows, " + str(cnt) + " stocks")
+        for rec in temp.to_dict('records'):
+            c6 = str(rec[cc]).zfill(6)[-6:]
+            _NOTICE_CACHE.setdefault(c6, []).append(rec)
+        print(f'[预拉] 公告表 {len(temp)} 条，覆盖 {len(_NOTICE_CACHE)} 只票')
     except Exception as e:
-        print("[pre] notice fail: " + type(e).__name__)
+        print(f'[预拉] 公告表失败: {type(e).__name__}（建议稍后重跑）')
     return _NOTICE_CACHE
 
 
@@ -699,7 +703,7 @@ def get_ann_score(code, name):
         return 50, "akshare未安装", []
     code6 = normalize_code(code)
     df = None
-    # 尝试多种 akshare 接口名（新旧版本）
+    # 尝试多种 akshare 接口名（新旧版本）。用户 v1.1.1 全表缓存 (#3) 已覆盖 #2 的能力，#2 留作兼容旧 akshare
     for attempt in [
         lambda: getattr(ak, 'stock_announcement_em', None) and ak.stock_announcement_em(symbol=code6),
         lambda: getattr(ak, 'stock_individual_notice_report', None) and ak.stock_individual_notice_report(security='股票', symbol=code6),

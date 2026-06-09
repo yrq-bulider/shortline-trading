@@ -22,13 +22,11 @@ import pandas as pd
 import time
 import datetime
 import os
-import functools
-import signal as _signal_module
 
 # ============================================================
 # 缓存
 # ============================================================
-_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), '短线工具箱', '.akshare_cache')
+_CACHE_DIR = os.path.join(os.path.dirname(__file__), '.akshare_cache')
 os.makedirs(_CACHE_DIR, exist_ok=True)
 _SESSION_CACHE: dict[str, pd.DataFrame] = {}
 

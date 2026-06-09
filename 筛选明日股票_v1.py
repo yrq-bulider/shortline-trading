@@ -295,6 +295,9 @@ df_filtered = df_ind[
     (~df_ind['industry'].isin(EXCLUDE_INDUSTRIES))
 ]
 print(f"过滤后: {len(df_filtered)} 只，覆盖 {df_filtered['industry'].nunique()} 个行业")
+# 过滤可交易代码前缀(仅00xxx和60xxx开头)
+df_filtered = df_filtered[df_filtered['code'].str[-6:].str.startswith(('00', '60'))]
+print("  代码过滤: {} 只".format(len(df_filtered)))
 # v1.1 修：原版按 code 升序遍历，sh 先填满 3 个名额导致 sz 几乎全被跳过（241 只里 sz 仅 18 只）
 # 改为按 industry 分组后组内打乱顺序再取 3 只 → sh/sz 按行业实际比例平衡，总数/耗时不变
 industry_groups = {}

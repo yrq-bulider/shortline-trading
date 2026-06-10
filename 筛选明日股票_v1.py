@@ -1243,7 +1243,7 @@ def print_attribution_report(attr):
     # 建议
     print("\n  [建议] 自动调参建议：")
     for r in attr['recommendations']:
-        print(f"     • {r}")
+        print(f"     * {r}")
     print("=" * 75)
 
 

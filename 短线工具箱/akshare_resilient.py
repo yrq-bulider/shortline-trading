@@ -234,7 +234,7 @@ def fetch_lhb() -> pd.DataFrame | None:
 
 
 def fetch_fund_flow_rank(indicator: str = '5日') -> pd.DataFrame | None:
-    """主力资金流排名表。"""
+    """主力资金流排名表。代理封push2.eastmoney.com，不重试。"""
     import akshare as ak
     return call_with_fallback(
         attempts=[
@@ -243,15 +243,17 @@ def fetch_fund_flow_rank(indicator: str = '5日') -> pd.DataFrame | None:
         ],
         cache_key=f'fundflow_{indicator}',
         timeout=8,
+        retries=0,
     )
 
 
 def fetch_hsgt(symbol: str) -> pd.DataFrame | None:
-    """个股北向资金持股明细。"""
+    """个股北向资金持股明细。非HSGT标的直接返回None，不重试。"""
     import akshare as ak
     return call_with_fallback(
         attempts=[(ak.stock_hsgt_individual_em, {'symbol': symbol})],
         timeout=8,
+        retries=0,
     )
 
 

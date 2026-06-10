@@ -91,6 +91,14 @@ def _latest_quarter_end():
 #   - 评分权重偏技术+资金（消息催化权重降低）
 #   - 日内分时择时，尾盘必清
 # ============================================================
+
+# ===== 动态日期 =====
+TODAY = datetime.date.today()
+START_DATE = (TODAY - datetime.timedelta(days=120)).isoformat()
+TODAY_STR = TODAY.isoformat()
+PREDICTION_DIR = "短线操作md文档"  # 当日预测 MD 统一放这里（不进 git）
+HISTORY_FILE = "短线工具箱/历史评分.jsonl"  # 记录每日评分+次日实际涨跌
+
 TRADING_MODE = 'T+1'  # ← 在这里切换模式
 
 print(f"扫描日期: {TODAY} | 交易模式: {TRADING_MODE} | akshare: {HAS_AKSHARE}")
@@ -1454,6 +1462,7 @@ def stars_display(n):
 # ============================================================
 # 【CLI 入口】
 # ============================================================
+risk_params = init_mode_config(TRADING_MODE)
 ARGS = parse_args()
 if ARGS.trading_mode:
     TRADING_MODE = ARGS.trading_mode
@@ -1499,12 +1508,11 @@ BATCH = 50
 histories = {}  # code -> DataFrame
 total = len(all_codes)
 t_fetch = time.time()
-for i in range(0, total, BATCH):
-    batch = all_codes[i:i+BATCH]
-    print(f"  拉取 {min(i+BATCH,total)}/{total} ...", end=' ')
-    t0 = time.time()
-    histories.update(batch_get_history(batch))
-    print(f"耗时:{time.time()-t0:.1f}s")
+# 单次会话拉全量, 避免 batch 间重复 login/logout
+print(f"  拉取 {total} 只(单会话预计约 {total//50*2}s) ...", end=' ')
+t0 = time.time()
+histories = batch_get_history(all_codes)
+print(f"耗时:{time.time()-t0:.1f}s")
 print(f"  共拉取 {len(histories)} 只，总耗时 {time.time()-t_fetch:.1f}s")
 
 # 预建 code → (name, industry) 字典，避免主扫时 O(N) 反查 sampled

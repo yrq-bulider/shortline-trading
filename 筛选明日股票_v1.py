@@ -1278,10 +1278,15 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
     top3_html = ""
     for i, r in enumerate(top3, 1):
         s = r['subscores']
+        bear_items = ''.join(f'<li>{x}</li>' for x in compute_falsification_signals(r))
         top3_html += f"""
 <div class="card">
   <h3>#{i} {r['name']} ({r['code']}) — 综合分 {r['composite']}</h3>
   <p><b>行业：</b>{r['industry']} | <b>价格：</b>{r['price']}元 | <b>仓位：</b>{r['position_pct']}%</p>
+  <div class="bear-box">
+    <b>⚠ 证伪信号（明日跌的可能理由，先看这块再决定要不要买）</b>
+    <ol>{bear_items}</ol>
+  </div>
   <p><b>4维子分：</b>技术 {s['tech']} | 业绩 {s['earn']} | 资金 {s['flow']} | 消息 {s['news']}</p>
   <p><b>信号：</b>{' / '.join(r['signals'])}</p>
   <p><b>说明：</b>{s['earn_reason']} | {s['flow_reason']} | {s['news_reason']}</p>
@@ -1354,6 +1359,9 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
   .meta {{ color: #ddd; font-size: 14px; margin-top: 8px; }}
   .section {{ background: white; margin: 20px 0; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }}
   .card {{ background: #f9f9f9; border-left: 4px solid #667eea; padding: 15px; margin: 10px 0; border-radius: 4px; }}
+  .bear-box {{ background: #fff3f3; border-left: 3px solid #d32f2f; padding: 10px 12px; margin: 8px 0; border-radius: 4px; }}
+  .bear-box ol {{ margin: 6px 0 0 0; padding-left: 22px; }}
+  .bear-box ol li {{ color: #b71c1c; margin: 3px 0; line-height: 1.5; }}
   table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
   th {{ background: #f0f0f0; padding: 8px; text-align: left; }}
   td {{ padding: 8px; border-bottom: 1px solid #eee; }}
@@ -1457,6 +1465,70 @@ def stars_display(n):
     if n <= 0: return "☆☆☆☆☆"
     n = max(1, min(5, int(n)))
     return "★" * n + "☆" * (5 - n)
+
+
+# ============================================================
+# 证伪门(bear-before-bull): 借鉴 Serenity 反确认偏误设计
+# 纯派生自已抓数据(RSI/MACD/布林/乖离/4维子分/板块),不引新数据源
+# ============================================================
+def compute_falsification_signals(r):
+    """
+    返回明日可能跌的理由列表(最多 3 条,按严重度降序)。
+    用于报告里强制呈现 bear 信号,逼用户先想反面再下单。
+    """
+    ind = r.get('indicators') or {}
+    s = r.get('subscores') or {}
+    price = r.get('price') or 0
+    bias = r.get('bias') or 0
+    sig_count = r.get('signal_count') or 0
+
+    hits = []
+
+    rsi = ind.get('rsi')
+    if rsi is not None:
+        if rsi >= 75:
+            hits.append((3, f"RSI {rsi:.1f} 严重超买,均值回归压力大"))
+        elif rsi >= 70:
+            hits.append((2, f"RSI {rsi:.1f} 偏超买"))
+
+    if bias and bias >= 8:
+        hits.append((3, f"正乖离 {bias}% 过大,易回踩 MA20"))
+    elif bias and bias >= 5:
+        hits.append((1, f"正乖离 {bias}% 偏高"))
+
+    macd = ind.get('macd_bar')
+    if macd is not None and macd <= 0:
+        hits.append((3, f"MACD 柱 {macd:.3f} 已转弱,动能衰竭"))
+
+    bb_u = ind.get('bb_upper')
+    if bb_u and price and price >= bb_u * 0.98:
+        hits.append((2, f"贴近布林上轨({bb_u:.2f}元),涨势末段"))
+
+    earn = s.get('earn', 100)
+    if earn <= 40:
+        hits.append((2, f"业绩面薄弱({earn}分:{s.get('earn_reason','')}),基本面不撑"))
+
+    flow = s.get('flow', 100)
+    if flow <= 40:
+        hits.append((2, f"资金面薄弱({flow}分:{s.get('flow_reason','')}),主力承接不足"))
+
+    news = s.get('news', 100)
+    if news <= 30:
+        hits.append((1, f"消息真空({news}分),无新催化推动"))
+
+    sec = s.get('sector', 50)
+    sec_reason = s.get('sector_reason', '')
+    if sec <= 35 or ('均涨跌-' in sec_reason and 'MA5向上占比' in sec_reason):
+        hits.append((2, f"板块退潮:{sec_reason}"))
+
+    if sig_count <= 1:
+        hits.append((1, f"技术信号仅 {sig_count} 个,买点共振不足"))
+
+    hits.sort(key=lambda x: -x[0])
+    reasons = [r for _, r in hits[:3]]
+    if not reasons:
+        return ["未发现明显证伪信号(注意:不代表零风险,大盘突发利空仍可能拖累)"]
+    return reasons
 
 
 # ============================================================
@@ -1783,6 +1855,10 @@ if results:
 
         top3_detail += f"""
 ### {i}. {r['code']} {r['name']} ({r['industry']}) | 综合分 {r['composite']}
+
+> **⚠ 证伪信号（先想反面再下单）**
+{chr(10).join(f'> {n}. {x}' for n, x in enumerate(compute_falsification_signals(r), 1))}
+
 - **价格**：{r['price']:.2f}元 | **RSI**：{rsi_str} {rsi_ok} | **MACD柱**：{macd_str} {macd_ok}
 - **4维子分**：技术{s['tech']} | 业绩{s['earn']}({s['earn_reason']}) | 资金{s['flow']}({s['flow_reason']}) | 消息{s['news']}({news_tags_str})
 - **板块**：{s['sector_reason']}

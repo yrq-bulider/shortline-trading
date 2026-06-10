@@ -57,8 +57,9 @@ def safe_score(label, extras=()):
     return deco
 
 
-def composite_score(tech, earn, flow, news,
-                    weights=(WEIGHT_TECH, WEIGHT_EARN, WEIGHT_FLOW, WEIGHT_NEWS)):
+def composite_score(tech, earn, flow, news, weights=None):
+    if weights is None:
+        weights = (WEIGHT_TECH, WEIGHT_EARN, WEIGHT_FLOW, WEIGHT_NEWS)
     return round(tech * weights[0] + earn * weights[1]
                  + flow * weights[2] + news * weights[3], 1)
 

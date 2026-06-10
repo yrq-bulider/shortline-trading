@@ -54,6 +54,7 @@ def _cache_set(key: str, df: pd.DataFrame):
         df.to_pickle(_cache_path(key))
     except Exception:
         pass  # 文件缓存失败不阻塞调用
+# spec deviation: pickle 代替 parquet (免 pyarrow 依赖)。empty df 当失败触发降级链。
 
 # ============================================================
 # 超时装饰器（通过信号实现，仅 Unix 可用；Windows fallback 用 time.sleep 检查）

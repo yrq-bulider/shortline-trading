@@ -233,6 +233,17 @@ def fetch_lhb() -> pd.DataFrame | None:
     )
 
 
+
+def fetch_lhb_inst() -> pd.DataFrame | None:
+    """近一月机构席位追踪全表(P1)。ak.stock_lhb_jgstatistic_em 返回 ~100 条。"""
+    import akshare as ak
+    return call_with_fallback(
+        attempts=[(ak.stock_lhb_jgstatistic_em, {'symbol': '近一月'})],
+        cache_key='lhb_inst',
+        timeout=10,
+        retries=1,
+    )
+
 def fetch_fund_flow_rank(indicator: str = '5日') -> pd.DataFrame | None:
     """主力资金流排名表。代理封push2.eastmoney.com，不重试。"""
     import akshare as ak

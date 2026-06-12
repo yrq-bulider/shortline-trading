@@ -48,7 +48,7 @@ _res_spec = _ilu.spec_from_file_location("akshare_resilient",
     __file__.replace("筛选明日股票_v1.py", "短线工具箱/akshare_resilient.py"))
 _res_mod = _ilu.module_from_spec(_res_spec)
 _res_spec.loader.exec_module(_res_mod)
-for _k in ["fetch_earnings","fetch_notice","fetch_lhb","fetch_fund_flow_rank","fetch_hsgt","fetch_news"]: locals()[_k] = getattr(_res_mod, _k)
+for _k in ["fetch_earnings","fetch_notice","fetch_lhb","fetch_lhb_inst","fetch_fund_flow_rank","fetch_hsgt","fetch_news"]: locals()[_k] = getattr(_res_mod, _k)
 
 # scorer module (pure algorithm functions)
 _sco_spec = _ilu.spec_from_file_location("scorer",
@@ -722,23 +722,23 @@ def get_newsfeed_score(code, name):
 
 @safe_score('北向失败')
 def get_hsgt_score(code):
-    """北向资金 5 日净流入子分 0-100。"""
+    """北向资金 3 日净流入子分 0-100(P1: 5→3 日, 反应更灵敏)。"""
     if not HAS_AKSHARE:
         return 50, "akshare未安装"
     try:
         df = fetch_hsgt(symbol=normalize_code(code))
     except Exception as e:
         return 50, f"北向拉取失败:{type(e).__name__}"
-    if df is None or df.empty or len(df) < 5:
+    if df is None or df.empty or len(df) < 3:
         return 50, "北向数据不足"
     flow_col = next((c for c in df.columns if '资金' in c and '今日' in c), None)
     if flow_col is None:
         return 50, "无资金流字段"
-    flow_5d = df[flow_col].head(5).sum()  # 单位：元（A 股个股 5 日净流入通常 ±1 亿）
-    score = 50 + flow_5d / 100000000 * 40  # 1 亿净流入对应 +40 分，-1 亿对应 -40 分
+    flow_3d = df[flow_col].head(3).sum()  # v1.2 P1: 5→3 日  # 单位：元（A 股个股 5 日净流入通常 ±1 亿）
+    score = 50 + flow_3d / 100000000 * 40  # 1 亿净流入对应 +40 分，-1 亿对应 -40 分
     score = max(0, min(100, round(score)))
-    direction = "流入" if flow_5d > 0 else "流出"
-    return score, f"5日北向{direction}{abs(flow_5d)/100000000:.2f}亿"
+    direction = "流入" if flow_3d > 0 else "流出"
+    return score, f"3日北向{direction}{abs(flow_3d)/100000000:.2f}亿"
 
 
 # 龙虎榜全市场缓存（v1.1 新增）
@@ -767,21 +767,69 @@ def _load_lhb_table():
     return _LHB_CACHE
 
 
+# 龙虎榜机构席位全市场缓存(P1 新增)
+_LHB_INST_LOADED = False
+_LHB_INST_CACHE = {}
+
+
+def _load_lhb_inst_table():
+    """预拉全市场近 1 月机构席位追踪表。fetch_lhb_inst 返回 ~100 条。
+    失败兜底：返回空 dict，机构加成跳过，不影响原 lhb 子分。"""
+    global _LHB_INST_LOADED, _LHB_INST_CACHE
+    if _LHB_INST_LOADED:
+        return _LHB_INST_CACHE
+    _LHB_INST_LOADED = True
+    try:
+        df = fetch_lhb_inst()
+        if df is None or df.empty:
+            print('[预拉] 机构席位表为空')
+            return _LHB_INST_CACHE
+        code_col = next((c for c in df.columns if '代码' in c), df.columns[0])
+        df['_code6'] = df[code_col].astype(str).str.zfill(6)
+        for c6, row in df.set_index('_code6').iterrows():
+            _LHB_INST_CACHE[c6] = row.to_dict()
+        print(f'[预拉] 机构席位表 {len(_LHB_INST_CACHE)} 条')
+    except Exception as e:
+        print(f'[预拉] 机构席位表失败: {type(e).__name__}(跳过机构加成)')
+    return _LHB_INST_CACHE
+
+
 @safe_score('龙虎失败')
 def get_lhb_score(code):
-    """龙虎榜子分 0-100。近 1 月内上榜过 + 净买入额 → 映射。"""
+    """龙虎榜子分 0-100 = 上榜净买入(基础) + 机构席位加成。
+    P1：叠加机构净买入 > 0 时 +10，>= 50 万时 +20。
+    机构表拉取失败时跳过加成，回退原 v1.1 行为。"""
     table = _load_lhb_table()
     code6 = normalize_code(code)
     row = table.get(code6)
     if row is None:
         return 50, "近1月未上榜"
     net_buy_col = next((k for k in row.keys() if '净买' in str(k)), None)
-    if net_buy_col and pd.notna(row[net_buy_col]):
-        net_buy = float(row[net_buy_col])  # 元
-        score = 50 + net_buy / 1000000  # 100 万对应 1 分
-        score = max(0, min(100, round(score)))
-        return score, f"龙虎榜净买{net_buy/10000:.0f}万"
-    return 70, "近1月有上榜"  # 有记录但取不到净买额
+    if not (net_buy_col and pd.notna(row[net_buy_col])):
+        return 70, "近1月有上榜"
+
+    net_buy = float(row[net_buy_col])
+    base = 50 + net_buy / 1000000
+    base = max(0, min(100, round(base)))
+    reason = f"龙虎榜净买{net_buy/10000:.0f}万"
+
+    # 机构席位加成(P1)
+    inst_table = _load_lhb_inst_table()
+    inst_row = inst_table.get(code6)
+    if inst_row is not None:
+        inst_net_col = next((k for k in inst_row.keys() if '净买' in str(k) and '机构' in str(k)), None)
+        if not inst_net_col:
+            inst_net_col = next((k for k in inst_row.keys() if '净买' in str(k)), None)
+        if inst_net_col and pd.notna(inst_row[inst_net_col]):
+            inst_net = float(inst_row[inst_net_col])
+            if inst_net >= 500000:
+                base = min(100, base + 20)
+                reason += f"|机构净买{inst_net/10000:.0f}万+20"
+            elif inst_net > 0:
+                base = min(100, base + 10)
+                reason += f"|机构净买{inst_net/10000:.0f}万+10"
+
+    return base, reason
 
 
 # 4 源融合权重（v1.1 新增）

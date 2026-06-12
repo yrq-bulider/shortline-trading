@@ -25,7 +25,7 @@
 
 - ❌ 新加独立的「先行信号」第 5 维（保持 4 维）
 - ❌ 改 NEWS_SUB_WEIGHTS 权重（保持 4 源权重不变）
-- ❌ 加新 akshare 依赖（只用已有接口）
+- ❌ 加新 akshare 依赖（只用已有接口；新增 1 个 `fetch_lhb_inst` 包装在 akshare_resilient，匹配项目 fetch_* 模式，非新依赖）
 - ❌ 触发 证伪门 改造（v2 证伪门是按现子分算的）
 - ❌ 改 baostock 流程（baostock 不参与 P1）
 
@@ -66,21 +66,14 @@ _LHB_INST_CACHE = {}
 
 
 def _load_lhb_inst_table():
-    """预拉全市场近 1 月机构席位追踪表。ak.stock_lhb_jgstatistic_em 返回 ~100 条。
+    """预拉全市场近 1 月机构席位追踪表。fetch_lhb_inst 返回 ~100 条。
     失败兜底：返回空 dict，机构加成跳过，不影响原 lhb 子分。"""
     global _LHB_INST_LOADED, _LHB_INST_CACHE
     if _LHB_INST_LOADED:
         return _LHB_INST_CACHE
     _LHB_INST_LOADED = True
     try:
-        from 短线工具箱.akshare_resilient import call_with_fallback
-        import akshare as ak
-        df = call_with_fallback(
-            attempts=[(ak.stock_lhb_jgstatistic_em, {'symbol': '近一月'})],
-            cache_key='lhb_inst',
-            timeout=10,
-            retries=1,
-        )
+        df = fetch_lhb_inst()
         if df is None or df.empty:
             print('[预拉] 机构席位表为空')
             return _LHB_INST_CACHE
@@ -93,6 +86,22 @@ def _load_lhb_inst_table():
         print(f'[预拉] 机构席位表失败: {type(e).__name__}（跳过机构加成）')
     return _LHB_INST_CACHE
 ```
+
+**对应 `短线工具箱/akshare_resilient.py` 追加 1 个包装**（与项目"每源一个 fetch_*"模式对齐）：
+
+```python
+def fetch_lhb_inst() -> pd.DataFrame | None:
+    """近一月机构席位追踪全表（v1.2 P1）。ak.stock_lhb_jgstatistic_em 返回 ~100 条。"""
+    import akshare as ak
+    return call_with_fallback(
+        attempts=[(ak.stock_lhb_jgstatistic_em, {'symbol': '近一月'})],
+        cache_key='lhb_inst',
+        timeout=10,
+        retries=1,
+    )
+```
+
+**主程序 import 列表**（line 51）追加 `"fetch_lhb_inst"` 到 import 循环里。
 
 **修改 `get_lhb_score`**：
 

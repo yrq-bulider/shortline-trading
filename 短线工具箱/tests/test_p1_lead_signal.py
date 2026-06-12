@@ -9,7 +9,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # 必须在 import 主模块之前设置 argv，防止 argparse 吃掉 pytest 参数
-sys.argv = ['pytest']
+# --mode backtest --days 0 让 backtest_score_history 返回 None（无需 histories 变量）
+# 这避免了 scan 模式的 batch_get_history（耗时 2 分钟）和 backtest 模式对 histories 的引用
+sys.argv = ['pytest', '--mode', 'backtest', '--days', '0']
 
 import pytest
 import pandas as pd

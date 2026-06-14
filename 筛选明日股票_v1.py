@@ -815,6 +815,45 @@ def _load_lhb_inst_table():
     return _LHB_INST_CACHE
 
 
+# === v1.3 涨停池 + 大盘情绪缓存 ===
+_ZT_POOL_LOADED = False
+_ZT_POOL_DF = None
+_MARKET_ACT_DF = None
+_EMOTION_TIER = {'tier': 'normal', 'multiplier': 1.0,
+                 'zt_count': 0, 'lianban_count': 0, 'dt_count': 0,
+                 'reason': '未初始化'}
+
+
+def _init_emotion_and_zt_pool():
+    """v1.3:预拉一次涨停池 + 市场活跃度,算出 emotion tier。
+    任一失败 → 默认 tier=normal/multiplier=1.0,不影响主流程。"""
+    global _ZT_POOL_LOADED, _ZT_POOL_DF, _MARKET_ACT_DF, _EMOTION_TIER
+    if _ZT_POOL_LOADED:
+        return _EMOTION_TIER
+    _ZT_POOL_LOADED = True
+    try:
+        _ZT_POOL_DF = fetch_zt_pool()
+        if _ZT_POOL_DF is None or _ZT_POOL_DF.empty:
+            print('[预拉] 涨停池为空(可能非交易时段或休市)')
+        else:
+            print(f'[预拉] 涨停池 {len(_ZT_POOL_DF)} 条')
+    except Exception as e:
+        print(f'[预拉] 涨停池失败: {type(e).__name__}(打板池跳过)')
+        _ZT_POOL_DF = None
+    try:
+        _MARKET_ACT_DF = fetch_market_activity()
+        if _MARKET_ACT_DF is None or _MARKET_ACT_DF.empty:
+            print('[预拉] 市场活跃度为空')
+        else:
+            print(f'[预拉] 市场活跃度 {len(_MARKET_ACT_DF)} 行')
+    except Exception as e:
+        print(f'[预拉] 市场活跃度失败: {type(e).__name__}(情绪门跳过)')
+        _MARKET_ACT_DF = None
+    _EMOTION_TIER = compute_emotion_tier(_ZT_POOL_DF, _MARKET_ACT_DF)
+    print(f"[情绪] {_EMOTION_TIER['reason']} | 仓位乘数 {_EMOTION_TIER['multiplier']}")
+    return _EMOTION_TIER
+
+
 @safe_score('龙虎失败')
 def get_lhb_score(code):
     """龙虎榜子分 0-100 = 上榜净买入(基础) + 机构席位加成。
@@ -1568,6 +1607,9 @@ if ARGS.mode == 'backtest':
 # ============================================================
 index_data = get_index_data()
 market_info = analyze_market(index_data)
+
+# v1.3: 预拉涨停池 + 市场活跃度, 算 emotion tier
+_init_emotion_and_zt_pool()
 
 
 # ============================================================

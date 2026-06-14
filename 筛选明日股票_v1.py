@@ -1819,9 +1819,12 @@ if results:
     # 优先选MACD红柱的
     top_picks_macd = [r for r in top_picks if r['indicators'].get('macd_bar', 0) > 0]
     top3 = top_picks_macd[:3] if len(top_picks_macd) >= 3 else top_picks[:3]
-    # 给每只分配动态仓位
+    # 给每只分配动态仓位(v1.3: 叠加 emotion tier 乘数)
     for r in top3:
-        r['position_pct'] = dynamic_position_pct(r['composite'], market_info['level'])
+        base_pct = dynamic_position_pct(r['composite'], market_info['level'])
+        r['position_pct'] = round(base_pct * _EMOTION_TIER['multiplier'], 1)
+        r['position_base'] = base_pct
+        r['position_emotion'] = _EMOTION_TIER['tier']
 
 
     # ============================================================

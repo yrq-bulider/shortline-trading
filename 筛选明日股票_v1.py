@@ -62,7 +62,7 @@ _bt_spec = _ilu.spec_from_file_location("backtest",
     os.path.join(os.path.dirname(__file__), "短线工具箱", "backtest.py"))
 _bt_mod = _ilu.module_from_spec(_bt_spec)
 _bt_spec.loader.exec_module(_bt_mod)
-for _bt_n in ["print_backtest_report","dim_name_cn","win_diff_cn","print_attribution_report"]: locals()[_bt_n] = getattr(_bt_mod, _bt_n)
+for _bt_n in ["print_backtest_report","dim_name_cn","win_diff_cn","print_attribution_report","print_dabang_pool_report"]: locals()[_bt_n] = getattr(_bt_mod, _bt_n)
 
 # === v1.3 emotion + dabang 模块(importlib) ===
 _em_spec = _ilu.spec_from_file_location("market_emotion",

@@ -48,7 +48,7 @@ _res_spec = _ilu.spec_from_file_location("akshare_resilient",
     __file__.replace("筛选明日股票_v1.py", "短线工具箱/akshare_resilient.py"))
 _res_mod = _ilu.module_from_spec(_res_spec)
 _res_spec.loader.exec_module(_res_mod)
-for _k in ["fetch_earnings","fetch_notice","fetch_lhb","fetch_lhb_inst","fetch_fund_flow_rank","fetch_hsgt","fetch_news"]: locals()[_k] = getattr(_res_mod, _k)
+for _k in ["fetch_earnings","fetch_notice","fetch_lhb","fetch_lhb_inst","fetch_fund_flow_rank","fetch_hsgt","fetch_news","fetch_zt_pool","fetch_market_activity"]: locals()[_k] = getattr(_res_mod, _k)
 
 # scorer module (pure algorithm functions)
 _sco_spec = _ilu.spec_from_file_location("scorer",
@@ -63,6 +63,19 @@ _bt_spec = _ilu.spec_from_file_location("backtest",
 _bt_mod = _ilu.module_from_spec(_bt_spec)
 _bt_spec.loader.exec_module(_bt_mod)
 for _bt_n in ["print_backtest_report","dim_name_cn","win_diff_cn","print_attribution_report"]: locals()[_bt_n] = getattr(_bt_mod, _bt_n)
+
+# === v1.3 emotion + dabang 模块(importlib) ===
+_em_spec = _ilu.spec_from_file_location("market_emotion",
+    os.path.join(os.path.dirname(__file__), "短线工具箱", "market_emotion.py"))
+_em_mod = _ilu.module_from_spec(_em_spec)
+_em_spec.loader.exec_module(_em_mod)
+for _en in ["compute_emotion_tier","POSITION_MULTIPLIER","EMOTION_THRESHOLDS"]: locals()[_en] = getattr(_em_mod, _en)
+
+_db_spec = _ilu.spec_from_file_location("dabang_pool",
+    os.path.join(os.path.dirname(__file__), "短线工具箱", "dabang_pool.py"))
+_db_mod = _ilu.module_from_spec(_db_spec)
+_db_spec.loader.exec_module(_db_mod)
+for _dn in ["compute_dabang_candidates","DABANG_FILTERS"]: locals()[_dn] = getattr(_db_mod, _dn)
 
 
 

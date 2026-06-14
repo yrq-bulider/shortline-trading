@@ -275,3 +275,30 @@ def fetch_news(symbol: str) -> pd.DataFrame | None:
         attempts=[(ak.stock_news_em, {'symbol': symbol})],
         timeout=10,
     )
+
+
+def fetch_zt_pool(date: str | None = None) -> pd.DataFrame | None:
+    """涨停股池 21 字段(v1.3)。ak.stock_zt_pool_em 默认拉今日。
+    date 形如 '20260614'。"""
+    import akshare as ak
+    if date is None:
+        from datetime import datetime
+        date = datetime.now().strftime('%Y%m%d')
+    return call_with_fallback(
+        attempts=[(ak.stock_zt_pool_em, {'date': date})],
+        cache_key=f'zt_pool_{date}',
+        timeout=10,
+        retries=1,
+    )
+
+
+def fetch_market_activity() -> pd.DataFrame | None:
+    """乐咕乐股市场活跃度(v1.3)。ak.stock_market_activity_legu 返回 1 行
+    含'涨停'/'跌停'/'连板'等字段。"""
+    import akshare as ak
+    return call_with_fallback(
+        attempts=[(ak.stock_market_activity_legu, {})],
+        cache_key='market_activity',
+        timeout=10,
+        retries=1,
+    )

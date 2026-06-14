@@ -48,7 +48,7 @@ _res_spec = _ilu.spec_from_file_location("akshare_resilient",
     __file__.replace("筛选明日股票_v1.py", "短线工具箱/akshare_resilient.py"))
 _res_mod = _ilu.module_from_spec(_res_spec)
 _res_spec.loader.exec_module(_res_mod)
-for _k in ["fetch_earnings","fetch_notice","fetch_lhb","fetch_lhb_inst","fetch_fund_flow_rank","fetch_hsgt","fetch_news"]: locals()[_k] = getattr(_res_mod, _k)
+for _k in ["fetch_earnings","fetch_notice","fetch_lhb","fetch_lhb_inst","fetch_fund_flow_rank","fetch_hsgt","fetch_news","fetch_zt_pool","fetch_market_activity"]: locals()[_k] = getattr(_res_mod, _k)
 
 # scorer module (pure algorithm functions)
 _sco_spec = _ilu.spec_from_file_location("scorer",
@@ -62,7 +62,20 @@ _bt_spec = _ilu.spec_from_file_location("backtest",
     os.path.join(os.path.dirname(__file__), "短线工具箱", "backtest.py"))
 _bt_mod = _ilu.module_from_spec(_bt_spec)
 _bt_spec.loader.exec_module(_bt_mod)
-for _bt_n in ["print_backtest_report","dim_name_cn","win_diff_cn","print_attribution_report"]: locals()[_bt_n] = getattr(_bt_mod, _bt_n)
+for _bt_n in ["print_backtest_report","dim_name_cn","win_diff_cn","print_attribution_report","print_dabang_pool_report"]: locals()[_bt_n] = getattr(_bt_mod, _bt_n)
+
+# === v1.3 emotion + dabang 模块(importlib) ===
+_em_spec = _ilu.spec_from_file_location("market_emotion",
+    os.path.join(os.path.dirname(__file__), "短线工具箱", "market_emotion.py"))
+_em_mod = _ilu.module_from_spec(_em_spec)
+_em_spec.loader.exec_module(_em_mod)
+for _en in ["compute_emotion_tier","POSITION_MULTIPLIER","EMOTION_THRESHOLDS"]: locals()[_en] = getattr(_em_mod, _en)
+
+_db_spec = _ilu.spec_from_file_location("dabang_pool",
+    os.path.join(os.path.dirname(__file__), "短线工具箱", "dabang_pool.py"))
+_db_mod = _ilu.module_from_spec(_db_spec)
+_db_spec.loader.exec_module(_db_mod)
+for _dn in ["compute_dabang_candidates","DABANG_FILTERS"]: locals()[_dn] = getattr(_db_mod, _dn)
 
 
 
@@ -802,6 +815,45 @@ def _load_lhb_inst_table():
     return _LHB_INST_CACHE
 
 
+# === v1.3 涨停池 + 大盘情绪缓存 ===
+_ZT_POOL_LOADED = False
+_ZT_POOL_DF = None
+_MARKET_ACT_DF = None
+_EMOTION_TIER = {'tier': 'normal', 'multiplier': 1.0,
+                 'zt_count': 0, 'lianban_count': 0, 'dt_count': 0,
+                 'reason': '未初始化'}
+
+
+def _init_emotion_and_zt_pool():
+    """v1.3:预拉一次涨停池 + 市场活跃度,算出 emotion tier。
+    任一失败 → 默认 tier=normal/multiplier=1.0,不影响主流程。"""
+    global _ZT_POOL_LOADED, _ZT_POOL_DF, _MARKET_ACT_DF, _EMOTION_TIER
+    if _ZT_POOL_LOADED:
+        return _EMOTION_TIER
+    _ZT_POOL_LOADED = True
+    try:
+        _ZT_POOL_DF = fetch_zt_pool()
+        if _ZT_POOL_DF is None or _ZT_POOL_DF.empty:
+            print('[预拉] 涨停池为空(可能非交易时段或休市)')
+        else:
+            print(f'[预拉] 涨停池 {len(_ZT_POOL_DF)} 条')
+    except Exception as e:
+        print(f'[预拉] 涨停池失败: {type(e).__name__}(打板池跳过)')
+        _ZT_POOL_DF = None
+    try:
+        _MARKET_ACT_DF = fetch_market_activity()
+        if _MARKET_ACT_DF is None or _MARKET_ACT_DF.empty:
+            print('[预拉] 市场活跃度为空')
+        else:
+            print(f'[预拉] 市场活跃度 {len(_MARKET_ACT_DF)} 行')
+    except Exception as e:
+        print(f'[预拉] 市场活跃度失败: {type(e).__name__}(情绪门跳过)')
+        _MARKET_ACT_DF = None
+    _EMOTION_TIER = compute_emotion_tier(_ZT_POOL_DF, _MARKET_ACT_DF)
+    print(f"[情绪] {_EMOTION_TIER['reason']} | 仓位乘数 {_EMOTION_TIER['multiplier']}")
+    return _EMOTION_TIER
+
+
 @safe_score('龙虎失败')
 def get_lhb_score(code):
     """龙虎榜子分 0-100 = 上榜净买入(基础) + 机构席位加成。
@@ -1236,7 +1288,7 @@ def backtest_dimension_attribution(report):
 # ============================================================
 # 【新】HTML 报告：把扫描+回测合并成一个漂亮的页面
 # ============================================================
-def generate_html_report(results, top3, market_info, backtest=None, history_recos=None, attribution=None):
+def generate_html_report(results, top3, market_info, backtest=None, history_recos=None, attribution=None, dabang=None, emotion=None):
     """生成HTML报告"""
     html_path = "短线工具箱/今日报告.html"
     rows_html = ""
@@ -1327,6 +1379,40 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
   <ul>{attr_recs}</ul>
 </div>"""
 
+    # === v1.3 大盘情绪 + 打板池 HTML ===
+    emotion_html = ""
+    if emotion:
+        emotion_html = f"""
+<div class="section">
+  <h2>[大盘情绪] {emotion['tier']}(仓位乘数 {emotion['multiplier']})</h2>
+  <p>{emotion['reason']}</p>
+</div>"""
+
+    dabang_html = ""
+    if dabang:
+        rows = ""
+        for c in dabang:
+            rows += (f"<tr><td>{c['code']}</td><td>{c['name']}</td>"
+                     f"<td><b>{c['composite']}</b></td>"
+                     f"<td>{c['price']:.2f}</td>"
+                     f"<td>{(c['mv_yi'] or 0):.1f}亿</td>"
+                     f"<td>{c['feng_time']}</td>"
+                     f"<td>{c['zhaban']}</td></tr>")
+        dabang_html = f"""
+<div class="section">
+  <h2>[打板池] 首板小盘候选(主板 + 4维≥60 + 雷区已过)</h2>
+  <table>
+    <tr><th>代码</th><th>名称</th><th>综合</th><th>价格</th><th>流通市值</th><th>封板</th><th>炸板</th></tr>
+    {rows}
+  </table>
+</div>"""
+    elif emotion:
+        dabang_html = """
+<div class="section">
+  <h2>[打板池] 首板小盘候选</h2>
+  <p>(空)今日无符合条件的首板小盘。</p>
+</div>"""
+
     # 历史去重
     recos_html = ""
     if history_recos:
@@ -1374,6 +1460,10 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
 </div>
 
 {bt_html}
+
+{emotion_html}
+
+{dabang_html}
 
 {attr_html}
 
@@ -1555,6 +1645,9 @@ if ARGS.mode == 'backtest':
 # ============================================================
 index_data = get_index_data()
 market_info = analyze_market(index_data)
+
+# v1.3: 预拉涨停池 + 市场活跃度, 算 emotion tier
+_init_emotion_and_zt_pool()
 
 
 # ============================================================
@@ -1764,9 +1857,12 @@ if results:
     # 优先选MACD红柱的
     top_picks_macd = [r for r in top_picks if r['indicators'].get('macd_bar', 0) > 0]
     top3 = top_picks_macd[:3] if len(top_picks_macd) >= 3 else top_picks[:3]
-    # 给每只分配动态仓位
+    # 给每只分配动态仓位(v1.3: 叠加 emotion tier 乘数)
     for r in top3:
-        r['position_pct'] = dynamic_position_pct(r['composite'], market_info['level'])
+        base_pct = dynamic_position_pct(r['composite'], market_info['level'])
+        r['position_pct'] = round(base_pct * _EMOTION_TIER['multiplier'], 1)
+        r['position_base'] = base_pct
+        r['position_emotion'] = _EMOTION_TIER['tier']
 
 
     # ============================================================
@@ -2124,8 +2220,25 @@ T+0 = 当日可买卖，无隔夜风险，但**没有时间等你"想清楚"**�
             with open('短线工具箱/归因报告.json', 'w', encoding='utf-8') as f:
                 json.dump(attr_report, f, ensure_ascii=False, indent=2)
 
+    # === v1.3 打板候选池 ===
+    score_dict_for_dabang = {
+        r['code']: {
+            'composite': r['composite'],
+            'subscores': r.get('subscores', {}),
+            'falsified': bool(r.get('falsified_signals')),
+        }
+        for r in results
+    }
+    dabang_candidates = compute_dabang_candidates(
+        _ZT_POOL_DF, score_dict_for_dabang, top_n=5,
+    )
+    print_dabang_pool_report(dabang_candidates, _EMOTION_TIER)
+
     if ARGS.mode == 'full':
-        html_path = generate_html_report(results, top3, market_info, backtest_report, recent_recos, attr_report)
+        html_path = generate_html_report(
+            results, top3, market_info, backtest_report, recent_recos, attr_report,
+            dabang=dabang_candidates, emotion=_EMOTION_TIER,
+        )
         print(f"\nHTML报告: {html_path}")
 
     # 总结

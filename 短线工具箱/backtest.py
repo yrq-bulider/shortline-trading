@@ -75,3 +75,22 @@ def print_attribution_report(attr):
         print(f"     * {r}")
     print("=" * 75)
 
+
+def print_dabang_pool_report(candidates, emotion_tier):
+    """打印涨停板候选池 CLI 报告(v1.3)。candidates 来自 compute_dabang_candidates。"""
+    print("\n" + "=" * 70)
+    print(f"  [打板池] 首板小盘候选(主板 + 4维≥60 + 业绩雷区已过)")
+    print(f"  [情绪] {emotion_tier['reason']} | 仓位乘数 {emotion_tier['multiplier']}")
+    print("=" * 70)
+    if not candidates:
+        print("  (空)今日无符合条件的首板小盘 — 涨停池可能为空或全被过滤")
+        print("=" * 70)
+        return
+    print(f"  {'代码':<8}{'名称':<10}{'综合':<6}{'价格':<8}{'流通(亿)':<10}{'封板':<8}{'炸板':<6}")
+    print("  " + "-" * 60)
+    for c in candidates:
+        print(f"  {c['code']:<8}{c['name']:<10}{c['composite']:<6}"
+              f"{c['price']:<8.2f}{(c['mv_yi'] or 0):<10.1f}"
+              f"{c['feng_time']:<8}{c['zhaban']:<6}")
+    print("=" * 70)
+

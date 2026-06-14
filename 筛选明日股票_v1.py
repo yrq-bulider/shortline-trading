@@ -1288,7 +1288,7 @@ def backtest_dimension_attribution(report):
 # ============================================================
 # 【新】HTML 报告：把扫描+回测合并成一个漂亮的页面
 # ============================================================
-def generate_html_report(results, top3, market_info, backtest=None, history_recos=None, attribution=None):
+def generate_html_report(results, top3, market_info, backtest=None, history_recos=None, attribution=None, dabang=None, emotion=None):
     """生成HTML报告"""
     html_path = "短线工具箱/今日报告.html"
     rows_html = ""
@@ -1379,6 +1379,40 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
   <ul>{attr_recs}</ul>
 </div>"""
 
+    # === v1.3 大盘情绪 + 打板池 HTML ===
+    emotion_html = ""
+    if emotion:
+        emotion_html = f"""
+<div class="section">
+  <h2>[大盘情绪] {emotion['tier']}(仓位乘数 {emotion['multiplier']})</h2>
+  <p>{emotion['reason']}</p>
+</div>"""
+
+    dabang_html = ""
+    if dabang:
+        rows = ""
+        for c in dabang:
+            rows += (f"<tr><td>{c['code']}</td><td>{c['name']}</td>"
+                     f"<td><b>{c['composite']}</b></td>"
+                     f"<td>{c['price']:.2f}</td>"
+                     f"<td>{(c['mv_yi'] or 0):.1f}亿</td>"
+                     f"<td>{c['feng_time']}</td>"
+                     f"<td>{c['zhaban']}</td></tr>")
+        dabang_html = f"""
+<div class="section">
+  <h2>[打板池] 首板小盘候选(主板 + 4维≥60 + 雷区已过)</h2>
+  <table>
+    <tr><th>代码</th><th>名称</th><th>综合</th><th>价格</th><th>流通市值</th><th>封板</th><th>炸板</th></tr>
+    {rows}
+  </table>
+</div>"""
+    elif emotion:
+        dabang_html = """
+<div class="section">
+  <h2>[打板池] 首板小盘候选</h2>
+  <p>(空)今日无符合条件的首板小盘。</p>
+</div>"""
+
     # 历史去重
     recos_html = ""
     if history_recos:
@@ -1426,6 +1460,10 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
 </div>
 
 {bt_html}
+
+{emotion_html}
+
+{dabang_html}
 
 {attr_html}
 
@@ -2182,8 +2220,25 @@ T+0 = 当日可买卖，无隔夜风险，但**没有时间等你"想清楚"**�
             with open('短线工具箱/归因报告.json', 'w', encoding='utf-8') as f:
                 json.dump(attr_report, f, ensure_ascii=False, indent=2)
 
+    # === v1.3 打板候选池 ===
+    score_dict_for_dabang = {
+        r['code']: {
+            'composite': r['composite'],
+            'subscores': r.get('subscores', {}),
+            'falsified': bool(r.get('falsified_signals')),
+        }
+        for r in results
+    }
+    dabang_candidates = compute_dabang_candidates(
+        _ZT_POOL_DF, score_dict_for_dabang, top_n=5,
+    )
+    print_dabang_pool_report(dabang_candidates, _EMOTION_TIER)
+
     if ARGS.mode == 'full':
-        html_path = generate_html_report(results, top3, market_info, backtest_report, recent_recos, attr_report)
+        html_path = generate_html_report(
+            results, top3, market_info, backtest_report, recent_recos, attr_report,
+            dabang=dabang_candidates, emotion=_EMOTION_TIER,
+        )
         print(f"\nHTML报告: {html_path}")
 
     # 总结

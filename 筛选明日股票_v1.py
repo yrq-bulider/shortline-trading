@@ -1455,7 +1455,9 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
     top3_html = ""
     for i, r in enumerate(top3, 1):
         s = r['subscores']
-        bear_items = ''.join(f'<li>{x}</li>' for x in compute_falsification_signals(r))
+        code6 = normalize_code(r['code'])
+        bear_items = ''.join(f'<li>{x}</li>' for x in
+                             compute_falsification_signals(r, inst_metrics=_inst_metrics_for(code6)))
         top3_html += f"""
 <div class="card">
   <h3>#{i} {r['name']} ({r['code']}) — 综合分 {r['composite']}</h3>
@@ -1686,10 +1688,53 @@ def stars_display(n):
 # 证伪门(bear-before-bull): 借鉴 Serenity 反确认偏误设计
 # 纯派生自已抓数据(RSI/MACD/布林/乖离/4维子分/板块),不引新数据源
 # ============================================================
-def compute_falsification_signals(r):
+def _inst_dzjy_rate(code6):
+    """v2.0:从 _INST_DF['dzjy'] 算出该 code 的近 30 日平均折价率(%)。
+    返回 None 表示无数据。"""
+    df = _INST_DF.get('dzjy') if isinstance(_INST_DF, dict) else None
+    if df is None or df.empty or '_code6' not in df.columns:
+        return None
+    rows = df[df['_code6'].astype(str).str.zfill(6) == str(code6).zfill(6)]
+    if rows.empty:
+        return None
+    rate_col = next((c for c in rows.columns if '折溢' in str(c)), None)
+    if not rate_col:
+        return None
+    rates = pd.to_numeric(rows[rate_col], errors='coerce').dropna()
+    return float(rates.mean()) if not rates.empty else None
+
+
+def _inst_restricted_30d(code6):
+    """v2.0:从 _INST_DF['restricted'] 算该 code 未来 30 日累计解禁占总股本比例(%)。
+    返回 None 表示无数据。"""
+    df = _INST_DF.get('restricted') if isinstance(_INST_DF, dict) else None
+    if df is None or df.empty or '_code6' not in df.columns:
+        return None
+    rows = df[df['_code6'].astype(str).str.zfill(6) == str(code6).zfill(6)]
+    if rows.empty:
+        return None
+    pct_col = next((c for c in rows.columns if '占总股本' in str(c) or '比例' in str(c)), None)
+    if not pct_col:
+        return None
+    pcts = pd.to_numeric(rows[pct_col], errors='coerce').dropna()
+    return float(pcts.sum()) if not pcts.empty else None
+
+
+def _inst_metrics_for(code6):
+    """v2.0:给证伪门用,组装 3 个机构行为派生指标。
+    margin_change 需要历史 df 对比,v2.0.1 再接;此处默认 None。"""
+    return {
+        'dzjy_rate':     _inst_dzjy_rate(code6),
+        'margin_change': None,  # v2.0.1:从 _INST_DF['margin'] + 7日历史算
+        'restricted_30d': _inst_restricted_30d(code6),
+    }
+
+
+def compute_falsification_signals(r, inst_metrics=None):
     """
     返回明日可能跌的理由列表(最多 3 条,按严重度降序)。
     用于报告里强制呈现 bear 信号,逼用户先想反面再下单。
+    inst_metrics: v2.0 机构行为派生指标 dict {'dzjy_rate', 'margin_change', 'restricted_30d'}。
     """
     ind = r.get('indicators') or {}
     s = r.get('subscores') or {}
@@ -1738,6 +1783,18 @@ def compute_falsification_signals(r):
 
     if sig_count <= 1:
         hits.append((1, f"技术信号仅 {sig_count} 个,买点共振不足"))
+
+    # === v2.0 机构流出相关 3 条 ===
+    if inst_metrics:
+        dzjy_rate = inst_metrics.get('dzjy_rate')
+        margin_change = inst_metrics.get('margin_change')
+        restricted_30d = inst_metrics.get('restricted_30d')
+        if dzjy_rate is not None and dzjy_rate >= 10:
+            hits.append((3, f"大宗折价{dzjy_rate:.1f}%(强出货信号,v2.0)"))
+        if margin_change is not None and margin_change <= -10:
+            hits.append((2, f"融资余额周降{abs(margin_change):.1f}%(杠杆踩踏,v2.0)"))
+        if restricted_30d is not None and restricted_30d >= 5:
+            hits.append((2, f"30日内解禁{restricted_30d:.1f}%流通(前瞻卖压,v2.0)"))
 
     hits.sort(key=lambda x: -x[0])
     reasons = [r for _, r in hits[:3]]
@@ -2081,7 +2138,7 @@ if results:
 ### {i}. {r['code']} {r['name']} ({r['industry']}) | 综合分 {r['composite']}
 
 > **⚠ 证伪信号（先想反面再下单）**
-{chr(10).join(f'> {n}. {x}' for n, x in enumerate(compute_falsification_signals(r), 1))}
+{chr(10).join(f'> {n}. {x}' for n, x in enumerate(compute_falsification_signals(r, inst_metrics=_inst_metrics_for(normalize_code(r['code']))), 1))}
 
 - **价格**：{r['price']:.2f}元 | **RSI**：{rsi_str} {rsi_ok} | **MACD柱**：{macd_str} {macd_ok}
 - **4维子分**：技术{s['tech']} | 业绩{s['earn']}({s['earn_reason']}) | 资金{s['flow']}({s['flow_reason']}) | 消息{s['news']}({news_tags_str})

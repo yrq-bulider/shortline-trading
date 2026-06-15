@@ -322,3 +322,78 @@ def fetch_dzjy(date: str | None = None) -> pd.DataFrame | None:
         timeout=15,
         retries=1,
     )
+
+
+def fetch_margin(trade_date: str | None = None) -> pd.DataFrame | None:
+    """深市融资融券明细(v2.0)。ak.stock_margin_underlying_info_szse 拉全市场。
+    字段:标的代码/简称/融资余额/融资买入额/融资偿还额/融券余量/融券卖出量。
+    用于:计算个股融资余额 N 日变化率(杠杆资金撤退)。
+    trade_date 形如 '20250614'。sse 备选接口不存在(已验证)。"""
+    import akshare as ak
+    return call_with_fallback(
+        attempts=[
+            (getattr(ak, 'stock_margin_underlying_info_szse', None),
+             {'date': trade_date} if trade_date else {}),
+            (getattr(ak, 'stock_margin_detail_szse', None),
+             {'date': trade_date} if trade_date else {}),
+            (getattr(ak, 'stock_margin_detail_sse', None),
+             {'date': trade_date} if trade_date else {}),
+        ],
+        cache_key=f'margin_{trade_date or "latest"}',
+        timeout=15,
+        retries=1,
+    )
+
+
+def fetch_holder(symbol: str | None = None) -> pd.DataFrame | None:
+    """股东户数变化(v2.0,THS 数据源季报披露)。
+    ak.stock_shareholder_change_ths 接受单只 symbol,返回该股股东户数变化序列。
+    字段:股票代码/公告日期/股东户数/增减/增减比例。
+    用于:户数大增=筹码分散=派发,大降=集中=吸筹(滞后但准)。
+    spec 偏离:plan 假设的 stock_holder_number_em 不存在,改用 stock_shareholder_change_ths。
+    预拉阶段用 None 让用户传入 symbol;init 时对全市场批量调用成本高,改为按需调用。"""
+    import akshare as ak
+    return call_with_fallback(
+        attempts=[
+            (getattr(ak, 'stock_shareholder_change_ths', None), {'symbol': symbol} if symbol else {}),
+            (getattr(ak, 'stock_circulate_stock_holder', None), {'symbol': symbol} if symbol else {}),
+        ],
+        cache_key=f'holder_{symbol or "all"}',
+        timeout=15,
+        retries=1,
+    )
+
+
+def fetch_restricted(date: str | None = None) -> pd.DataFrame | None:
+    """限售解禁日历(v2.0)。ak.stock_restricted_release_summary_em 拉全市场未来解禁汇总。
+    字段:股票代码/股票简称/解禁日期/解禁数量/占总股本比例/流通市值。
+    用于:计算 30 日内解禁压力(前瞻卖压)。
+    spec 偏离:plan 假设的 stock_restricted_release_em 不存在,改用 stock_restricted_release_summary_em。"""
+    import akshare as ak
+    return call_with_fallback(
+        attempts=[
+            (getattr(ak, 'stock_restricted_release_summary_em', None), {}),
+            (getattr(ak, 'stock_restricted_release_queue_em', None), {}),
+            (getattr(ak, 'stock_restricted_release_detail_em', None), {}),
+        ],
+        cache_key=f'restricted_{date or "forward90"}',
+        timeout=15,
+        retries=1,
+    )
+
+
+def fetch_fund_flow_split(symbol: str) -> pd.DataFrame | None:
+    """主力分单细粒度(v2.0)。ak.stock_fund_flow_individual 拉单股资金流。
+    字段:含特大单/大单/中单/小单净额。
+    用于:识别'机构吸筹 vs 派发给散户'。
+    spec 偏离:plan 假设的 stock_individual_fund_flow 试调连接失败,改用 stock_fund_flow_individual(同名实为分单接口)。"""
+    import akshare as ak
+    return call_with_fallback(
+        attempts=[
+            (getattr(ak, 'stock_fund_flow_individual', None), {'symbol': symbol}),
+            (getattr(ak, 'stock_individual_fund_flow', None), {'stock': symbol, 'market': 'sh' if symbol.startswith('6') else 'sz'}),
+        ],
+        cache_key=f'fund_flow_split_{symbol}',
+        timeout=10,
+        retries=0,
+    )

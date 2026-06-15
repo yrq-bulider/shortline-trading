@@ -104,11 +104,13 @@ def test_lhb_not_in_inst_table(monkeypatch):
 
 
 def test_lhb_inst_table_load_failure(monkeypatch):
-    """机构表拉取失败 → _LHB_INST_CACHE = {} → 跳过加成。"""
-    import 短线工具箱.akshare_resilient as ar
-    monkeypatch.setattr(ar, "call_with_fallback", lambda **kw: None)
+    """机构表拉取失败 → _LHB_INST_CACHE = {} → 跳过加成。
 
+    patch 的是 m.fetch_lhb_inst(已通过 importlib 导入到 v1.py 模块字典),
+    不是 ar.call_with_fallback(后者已被闭包捕获,patch 不生效)。
+    """
     import 筛选明日股票_v1 as m
+    monkeypatch.setattr(m, "fetch_lhb_inst", lambda: None)
     monkeypatch.setattr(m, "_LHB_INST_LOADED", False)
     monkeypatch.setattr(m, "_LHB_INST_CACHE", {})
 

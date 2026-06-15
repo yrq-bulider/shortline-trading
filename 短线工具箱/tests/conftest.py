@@ -16,6 +16,10 @@ _CWD       = r'C:\Users\yan\Desktop\短线操作'
 _MAIN_PATH = os.path.join(_CWD, '筛选明日股票_v1.py')
 _AR_PATH   = os.path.join(_CWD, '短线工具箱', 'akshare_resilient.py')
 _SC_PATH   = os.path.join(_CWD, '短线工具箱', 'scorer.py')
+_BT_PATH   = os.path.join(_CWD, '短线工具箱', 'backtest.py')
+_ME_PATH   = os.path.join(_CWD, '短线工具箱', 'market_emotion.py')
+_DB_PATH   = os.path.join(_CWD, '短线工具箱', 'dabang_pool.py')
+_IF_PATH   = os.path.join(_CWD, '短线工具箱', 'institutional_flow.py')
 
 # ============================================================
 # Loader
@@ -37,11 +41,12 @@ class _PatchingLoader(importlib.abc.Loader):
             src, flags=re.MULTILINE)
 
         # Patch 2: index_data = get_index_data() → fake
-        # 使用双引号避免字符串内的单引号冲突
+        # get_index_data() 真实返回 {'sh.000001': ('上证指数', df), ...},
+        # analyze_market() 用 for code, (name, df) in index_data.items() 且
+        # len(df) < 20: continue。所以 fake 用 2 行 DataFrame,for-loop 自动跳过。
+        # 旧 fake_index 是 rating/trend dict 形状,跟新接口对不上,test_p1 加载时崩。
         fake_index = (
-            '{"rating": "一般", "trend": "震荡", "rating_val": 50,'
-            '"index_name": "dummy", "index_code": "dummy",'
-            '"sh_close": 3000.0, "hs300_close": 3000.0, "index_chg": 0.0}'
+            "{'sh.000001': ('上证指数', pd.DataFrame({'close': [1.0, 2.0]}))}"
         )
         src = re.sub(
             r'^index_data\s*=\s*get_index_data\(\)\s*$',
@@ -55,12 +60,26 @@ class _PatchingLoader(importlib.abc.Loader):
             src, flags=re.MULTILINE)
 
         # Patch 4: __file__ references → hardcoded paths
+        # v1.py 用 importlib 从模块同目录加载子模块;conftest 自定义 exec_module
+        # 时 __file__ 不在 module.__dict__,所以全部 patch 成绝对路径。
         src = src.replace(
             '__file__.replace("筛选明日股票_v1.py", "短线工具箱/akshare_resilient.py")',
             repr(_AR_PATH))
         src = src.replace(
             'os.path.join(os.path.dirname(__file__), "短线工具箱", "scorer.py")',
             repr(_SC_PATH))
+        src = src.replace(
+            'os.path.join(os.path.dirname(__file__), "短线工具箱", "backtest.py")',
+            repr(_BT_PATH))
+        src = src.replace(
+            'os.path.join(os.path.dirname(__file__), "短线工具箱", "market_emotion.py")',
+            repr(_ME_PATH))
+        src = src.replace(
+            'os.path.join(os.path.dirname(__file__), "短线工具箱", "dabang_pool.py")',
+            repr(_DB_PATH))
+        src = src.replace(
+            'os.path.join(os.path.dirname(__file__), "短线工具箱", "institutional_flow.py")',
+            repr(_IF_PATH))
 
         # Patch 5: sys.argv → scan mode
         orig_argv = sys.argv

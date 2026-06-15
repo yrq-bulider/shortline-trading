@@ -302,3 +302,23 @@ def fetch_market_activity() -> pd.DataFrame | None:
         timeout=10,
         retries=1,
     )
+
+
+def fetch_dzjy(date: str | None = None) -> pd.DataFrame | None:
+    """大宗交易明细(v2.0)。ak.stock_dzjy_mrmx 拉近 30 日全市场。
+    字段:交易日/代码/简称/成交价/折溢率/买方营业部/卖方营业部/成交金额。
+    用于:识别机构原始股东减持 + 折价率扩大(出货信号)。
+    date 形如 '20250614'。"""
+    import akshare as ak
+    from datetime import datetime
+    if date is None:
+        date = datetime.now().strftime('%Y%m%d')
+    return call_with_fallback(
+        attempts=[
+            (getattr(ak, 'stock_dzjy_mrmx', None), {'date': date}),
+            (getattr(ak, 'stock_dzjy_mrtj', None), {}),
+        ],
+        cache_key=f'dzjy_{date}',
+        timeout=15,
+        retries=1,
+    )

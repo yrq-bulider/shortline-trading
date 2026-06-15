@@ -145,6 +145,7 @@ lost+found/
 # 6. Claude / Codex 本地状态（可能含路径/历史）
 # ============================================================
 .claude/settings.local.json
+.claude/settings.json
 .claude/agents/
 .claude/projects/
 .claude/sessions/

@@ -100,18 +100,6 @@ try:
     HAS_AKSHARE = True
 except ImportError:
     HAS_AKSHARE = False
-def _latest_quarter_end():
-    """返回最近完整季度末日期字符串（YYYYMMDD），用于 akshare 业绩查询参数。
-    如 6/9 调用 → '20260331'（Q1 末），9/15 → '20250630'（半年末）。"""
-    m, y = TODAY.month, TODAY.year
-    if m <= 3:
-        return f"{y-1}1231"  # 去年年报
-    elif m <= 6:
-        return f"{y}0331"     # 今年一季报
-    elif m <= 9:
-        return f"{y}0630"     # 今年半年报
-    else:
-        return f"{y}0930"     # 今年三季报
 
 # ============================================================
 # 【核心配置】交易模式：'T+1'（A股股票）或 'T+0'（ETF/可转债）
@@ -326,43 +314,6 @@ def _fetch_with_own_session(code, start_date, end_date, min_rows, sleep_s):
         df = None
     time.sleep(sleep_s)
     return code, df
-
-def batch_get_history_concurrent(codes, start_date=None, end_date=None, min_rows=60,
-                                 max_workers=4, sleep_per_req=0.15, progress=True):
-    """并发批量拉 K 线。结果用 code 索引，缺失的票不在 dict 里（与原版语义一致）。"""
-    if start_date is None: start_date = START_DATE
-    if end_date is None: end_date = TODAY_STR
-    codes = list(codes)
-    total = len(codes)
-    results = {}
-    fail_log = []
-    t0 = time.time()
-
-    def _one(code):
-        return _fetch_with_own_session(code, start_date, end_date, min_rows, sleep_per_req)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = {ex.submit(_one, code): code for code in codes}
-        done = 0
-        for fut in as_completed_iter(futures):
-            done += 1
-            try:
-                code, df = fut.result()
-                if df is not None:
-                    results[code] = df
-                else:
-                    fail_log.append(code)
-            except Exception:
-                fail_log.append(futures[fut])
-            if progress and (done % 20 == 0 or done == total):
-                print(f"  并发进度: {done}/{total}  已用时 {time.time()-t0:.1f}s", flush=True)
-
-    if progress:
-        print(f"  并发完成: 成功 {len(results)} / 失败 {len(fail_log)}  总耗时 {time.time()-t0:.1f}s")
-        if fail_log:
-            print(f"  失败列表(前10): {fail_log[:10]}")
-    return results
-
 
 def as_completed_iter(futures):
     """as_completed 的薄封装，便于测试时 mock。"""
@@ -1036,28 +987,6 @@ WEIGHT_V2 = {
     'news':  0.20,
     'inst':  0.20,
 }
-
-
-def compute_composite_v2(code, name, tech_score, earn_score):
-    """5 维加权综合分:技术 0.20 + 业绩 0.15 + 资金 0.25 + 消息 0.20 + 机构 0.20。
-    资金用 get_capital_flow_score_v2 (5 子分),消息用 v2 (2 源),
-    机构行为用 _init_institutional_flow + compute_institutional_score。"""
-    flow_score, flow_reason = get_capital_flow_score_v2(code)
-    news_score, news_reason, _ = get_news_catalyst_score_v2(code, name)
-    inst_score, inst_subs = compute_institutional_score_v2(normalize_code(code))
-
-    composite = round(
-        tech_score * WEIGHT_V2['tech'] +
-        earn_score * WEIGHT_V2['earn'] +
-        flow_score * WEIGHT_V2['flow'] +
-        news_score * WEIGHT_V2['news'] +
-        inst_score * WEIGHT_V2['inst'])
-    return composite, {
-        'tech': tech_score, 'earn': earn_score, 'flow': flow_score,
-        'news': news_score, 'inst': inst_score,
-        'flow_reason': flow_reason, 'news_reason': news_reason,
-        'inst_subs': inst_subs,
-    }
 
 
 # ============================================================

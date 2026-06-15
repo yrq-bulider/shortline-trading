@@ -1,5 +1,0 @@
-策略名称,原理简述,适用场景,核心参数,参数默认值,参数说明,代码文件
-突破策略,价格突破N日最高点买入，跌破N日最低点卖出，配合成交量放大确认,趋势明显的股票，突破整理形态时,high_period;volume_multiplier,20;1.5,"high_period:突破周期(天);volume_multiplier:量能倍数",../策略库/突破策略.py
-均线策略,MA5上穿MA20(金叉)买入，MA5下穿MA20(死叉)卖出,中短线趋势跟踪，震荡市需配合其他指标,short_period;long_period,5;20,"short_period:短期均线周期;long_period:长期均线周期",../策略库/均线策略.py
-打板策略,昨日涨停股今日开盘买入，设定固定止盈止损，尾盘强制平仓,强势股短线操作，涨停板效应明显时,profit_target;stop_loss;close_time,0.07;0.03;14:55,"profit_target:止盈比例;stop_loss:止损比例;close_time:尾盘平仓时间",../策略库/打板策略.py
-量价策略,量增价涨(成交量放大+价格上涨)买入，量缩价跌(成交量萎缩+价格下跌)卖出,发现主力动向，确认趋势强度,vol_change_rate;vol_shrink_rate;price_change_min,0.5;0.3;0.02,"vol_change_rate:成交量放大变化率;vol_shrink_rate:成交量萎缩变化率;price_change_min:最小价格变化比例",../策略库/量价策略.py

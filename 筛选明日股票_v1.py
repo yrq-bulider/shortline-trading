@@ -1458,6 +1458,9 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
         code6 = normalize_code(r['code'])
         bear_items = ''.join(f'<li>{x}</li>' for x in
                              compute_falsification_signals(r, inst_metrics=_inst_metrics_for(code6)))
+        # v2.0 机构行为子分明细 + 主力分单 reason
+        _, _v2_inst = compute_institutional_score_v2(code6)
+        _, _v2_fen_reason = _get_main_force_split_score(r['code'])
         top3_html += f"""
 <div class="card">
   <h3>#{i} {r['name']} ({r['code']}) — 综合分 {r['composite']}</h3>
@@ -1467,8 +1470,14 @@ def generate_html_report(results, top3, market_info, backtest=None, history_reco
     <ol>{bear_items}</ol>
   </div>
   <p><b>4维子分：</b>技术 {s['tech']} | 业绩 {s['earn']} | 资金 {s['flow']} | 消息 {s['news']}</p>
+  <p><b>v2.0 机构行为子分：</b>
+     大宗 {_v2_inst.get('dzjy', [50, '-'])[0]} |
+     融资 {_v2_inst.get('margin', [50, '-'])[0]} |
+     股东户数 {_v2_inst.get('holder', [50, '-'])[0]} |
+     解禁 {_v2_inst.get('restricted', [50, '-'])[0]}
+  </p>
   <p><b>信号：</b>{' / '.join(r['signals'])}</p>
-  <p><b>说明：</b>{s['earn_reason']} | {s['flow_reason']} | {s['news_reason']}</p>
+  <p><b>说明：</b>{s['earn_reason']} | {s['flow_reason']} | {s['news_reason']} | 主力分单:{_v2_fen_reason}</p>
 </div>"""
 
     # 回测部分
@@ -2097,6 +2106,10 @@ if results:
     for i, r in enumerate(top3, 1):
         ind = r['indicators']
         s = r['subscores']
+        # v2.0 机构行为子分(CLI 用)
+        code6 = normalize_code(r['code'])
+        _, _v2_inst = compute_institutional_score_v2(code6)
+        _, _v2_fen_reason = _get_main_force_split_score(r['code'])
         rsi_str = f"{ind['rsi']:.1f}" if ind['rsi'] else "N/A"
         macd_str = f"{ind['macd_bar']:.3f}" if ind['macd_bar'] else "N/A"
         buy_low = round(r['price'] * 0.97, 2)
@@ -2142,6 +2155,7 @@ if results:
 
 - **价格**：{r['price']:.2f}元 | **RSI**：{rsi_str} {rsi_ok} | **MACD柱**：{macd_str} {macd_ok}
 - **4维子分**：技术{s['tech']} | 业绩{s['earn']}({s['earn_reason']}) | 资金{s['flow']}({s['flow_reason']}) | 消息{s['news']}({news_tags_str})
+- **v2.0 机构行为子分**：大宗 {_v2_inst.get('dzjy', [50, '-'])[0]} | 融资 {_v2_inst.get('margin', [50, '-'])[0]} | 股东户数 {_v2_inst.get('holder', [50, '-'])[0]} | 解禁 {_v2_inst.get('restricted', [50, '-'])[0]} | 主力分单:{_v2_fen_reason}
 - **板块**：{s['sector_reason']}
 - **技术信号**：{' / '.join(r['signals'])}（{r['signal_count']}信号）
 - **布林带**：上轨 {bb_u} / 中轨 {bb_m} / 下轨 {bb_l} | 乖离 {r['bias']}%

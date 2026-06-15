@@ -48,7 +48,10 @@ _res_spec = _ilu.spec_from_file_location("akshare_resilient",
     __file__.replace("筛选明日股票_v1.py", "短线工具箱/akshare_resilient.py"))
 _res_mod = _ilu.module_from_spec(_res_spec)
 _res_spec.loader.exec_module(_res_mod)
-for _k in ["fetch_earnings","fetch_notice","fetch_lhb","fetch_lhb_inst","fetch_fund_flow_rank","fetch_hsgt","fetch_news","fetch_zt_pool","fetch_market_activity"]: locals()[_k] = getattr(_res_mod, _k)
+for _k in ["fetch_earnings","fetch_notice","fetch_lhb","fetch_lhb_inst","fetch_fund_flow_rank","fetch_hsgt","fetch_news","fetch_zt_pool","fetch_market_activity",
+           # v2.0: 机构流出 4 个新数据源 + 主力分单细粒度
+           "fetch_dzjy","fetch_margin","fetch_holder","fetch_restricted","fetch_fund_flow_split"]:
+    locals()[_k] = getattr(_res_mod, _k)
 
 # scorer module (pure algorithm functions)
 _sco_spec = _ilu.spec_from_file_location("scorer",
@@ -76,6 +79,16 @@ _db_spec = _ilu.spec_from_file_location("dabang_pool",
 _db_mod = _ilu.module_from_spec(_db_spec)
 _db_spec.loader.exec_module(_db_mod)
 for _dn in ["compute_dabang_candidates","DABANG_FILTERS"]: locals()[_dn] = getattr(_db_mod, _dn)
+
+# === v2.0 institutional_flow 模块(importlib) ===
+_if_spec = _ilu.spec_from_file_location("institutional_flow",
+    os.path.join(os.path.dirname(__file__), "短线工具箱", "institutional_flow.py"))
+_if_mod = _ilu.module_from_spec(_if_spec)
+_if_spec.loader.exec_module(_if_mod)
+for _if_n in ["compute_institutional_score","score_dzjy","score_margin",
+              "score_holder","score_restricted","score_main_force_split",
+              "INST_SUB_WEIGHTS"]:
+    locals()[_if_n] = getattr(_if_mod, _if_n)
 
 
 
@@ -852,6 +865,46 @@ def _init_emotion_and_zt_pool():
     _EMOTION_TIER = compute_emotion_tier(_ZT_POOL_DF, _MARKET_ACT_DF)
     print(f"[情绪] {_EMOTION_TIER['reason']} | 仓位乘数 {_EMOTION_TIER['multiplier']}")
     return _EMOTION_TIER
+
+
+# === v2.0 机构流出缓存 + 预拉 ===
+_INST_DF = {'dzjy': None, 'margin': None, 'holder': None, 'restricted': None}
+_INST_LOADED = False
+_FUND_FLOW_SPLIT_DF = None  # 主力分单细粒度(按需,不在 init 预拉)
+
+
+def _init_institutional_flow():
+    """v2.0:预拉 4 张机构流出表。任一失败 → 该子分 50 兜底,不影响主流程。"""
+    global _INST_DF, _INST_LOADED
+    if _INST_LOADED:
+        return _INST_DF
+    _INST_LOADED = True
+    for key, fn in [('dzjy', fetch_dzjy), ('margin', fetch_margin),
+                    ('holder', fetch_holder), ('restricted', fetch_restricted)]:
+        try:
+            df = fn()
+            if df is not None and not df.empty:
+                if '_code6' not in df.columns:
+                    cc = next((c for c in df.columns if '代码' in str(c)), None)
+                    if cc:
+                        df['_code6'] = df[cc].astype(str).str.zfill(6)
+                _INST_DF[key] = df
+                print(f'[预拉] 机构-{key} {len(df)} 条')
+            else:
+                print(f'[预拉] 机构-{key} 拉取为空(子分兜底 50)')
+        except Exception as e:
+            print(f'[预拉] 机构-{key} 失败:{type(e).__name__}(子分兜底 50)')
+    return _INST_DF
+
+
+def compute_institutional_score_v2(code6):
+    """v2.0 机构行为子分便捷包装:从全局缓存取 4 张表 → 综合分 + 子分明细。"""
+    inst_dfs = _init_institutional_flow()
+    return compute_institutional_score(
+        code6,
+        inst_dfs.get('dzjy'), inst_dfs.get('margin'),
+        inst_dfs.get('holder'), inst_dfs.get('restricted'),
+    )
 
 
 @safe_score('龙虎失败')
@@ -1648,6 +1701,9 @@ market_info = analyze_market(index_data)
 
 # v1.3: 预拉涨停池 + 市场活跃度, 算 emotion tier
 _init_emotion_and_zt_pool()
+
+# v2.0: 预拉 4 张机构流出表
+_init_institutional_flow()
 
 
 # ============================================================

@@ -599,19 +599,7 @@ def get_capital_flow_score(code):
     if not table:
         # v1.1.1 review：原 ab5093d 降级用 hsgt/lhb 与 news 维度双计（同一数据算两次分）。
         # 改用 histories 已有的 amount 5 日均量比作资金动量代理，零额外 IO、与 hsgt/lhb 完全正交。
-        df = globals().get('histories', {}).get(code)
-        if df is not None and len(df) >= 6:
-            today_amt = float(df['amount'].iloc[-1])
-            avg_5d = float(df['amount'].iloc[-6:-1].mean())
-            if avg_5d > 0:
-                ratio = today_amt / avg_5d
-                if ratio >= 2.0:    return 85, f"放量{ratio:.1f}x"
-                elif ratio >= 1.5:  return 70, f"放量{ratio:.1f}x"
-                elif ratio >= 0.85: return 50, f"量平稳{ratio:.2f}x"
-                elif ratio >= 0.6:  return 35, f"缩量{ratio:.2f}x"
-                else:               return 20, f"严重缩量{ratio:.2f}x"
-        return 50, "资金流数据缺失"  # 完全没数据兜底
-
+        return _get_amount_ratio_score(code)
     row = table.get(normalize_code(code))
     if row is None:
         return 50, "未匹配到资金流"
@@ -623,6 +611,59 @@ def get_capital_flow_score(code):
             elif flow > -5000: return 40 + (flow + 5000) / 125, f"5日小幅流出{abs(flow):.0f}万"
             else:              return max(0, 20 + flow / 250), f"5日主力出逃{abs(flow)/10000:.2f}亿"
     return 50, "无主力净流入字段"
+
+
+def _get_amount_ratio_score(code):
+    """量比子分 0-100:基于今日 amount vs 5 日均量比。
+    零额外 IO(直接用 histories),与 hsgt/lhb 完全正交。"""
+    df = globals().get('histories', {}).get(code)
+    if df is None or len(df) < 6:
+        return 50, "量比数据缺失"
+    today_amt = float(df['amount'].iloc[-1])
+    avg_5d = float(df['amount'].iloc[-6:-1].mean())
+    if avg_5d <= 0:
+        return 50, "量比基线为0"
+    ratio = today_amt / avg_5d
+    if ratio >= 2.0:    return 85, f"放量{ratio:.1f}x"
+    elif ratio >= 1.5:  return 70, f"放量{ratio:.1f}x"
+    elif ratio >= 0.85: return 50, f"量平稳{ratio:.2f}x"
+    elif ratio >= 0.6:  return 35, f"缩量{ratio:.2f}x"
+    else:               return 20, f"严重缩量{ratio:.2f}x"
+
+
+def _get_main_force_split_score(code):
+    """主力分单细粒度子分(v2.0 资金面 5 子分之一)。
+    拉单只票的 stock_fund_flow_individual(单股接口,非全表)。
+    缓存到 _FUND_FLOW_SPLIT_CACHE 避免重复 IO。"""
+    if not HAS_AKSHARE:
+        return 50, "akshare未安装"
+    code6 = normalize_code(code)
+    cache = globals().setdefault('_FUND_FLOW_SPLIT_CACHE', {})
+    if code6 in cache:
+        return score_main_force_split(code6, cache[code6])
+    try:
+        df = fetch_fund_flow_split(code6)
+    except Exception as e:
+        return 50, f"主力分单拉取失败:{type(e).__name__}"
+    cache[code6] = df
+    return score_main_force_split(code6, df)
+
+
+def get_capital_flow_score_v2(code):
+    """v2.0 资金面综合分(5 子分加权):主力5日 0.20 + 主力分单 0.30
+    + 北向 0.20 + 龙虎 0.20 + 量比 0.10。"""
+    base_score, base_reason = get_capital_flow_score(code)
+    fen_score, fen_reason = _get_main_force_split_score(code)
+    hsgt_score, hsgt_reason = get_hsgt_score(code)
+    lhb_score, lhb_reason = get_lhb_score(code)
+    amt_score, amt_reason = _get_amount_ratio_score(code)
+
+    composite = round(
+        base_score * 0.20 + fen_score * 0.30 + hsgt_score * 0.20 +
+        lhb_score * 0.20 + amt_score * 0.10)
+    reason = (f"主力5日{base_score}|分单{fen_score}|"
+              f"北向{hsgt_score}|龙虎{lhb_score}|量比{amt_score}")
+    return composite, reason
 
 
 # ============================================================
@@ -945,8 +986,11 @@ def get_lhb_score(code):
     return base, reason
 
 
-# 4 源融合权重（v1.1 新增）
+# 4 源融合权重（v1.1 新增；v2.0 后 hsgt/lhb 移至资金面, 见 NEWS_SUB_WEIGHTS_V2）
 NEWS_SUB_WEIGHTS = {'ann': 0.30, 'newsfeed': 0.30, 'hsgt': 0.20, 'lhb': 0.20}
+
+# v2.0 消息面 2 源权重（hsgt/lhb 移到资金面,消息面只留公告+新闻情感）
+NEWS_SUB_WEIGHTS_V2 = {'ann': 0.50, 'newsfeed': 0.50}
 
 
 @safe_score('信息失败', extras=([],))
@@ -972,6 +1016,48 @@ def get_news_catalyst_score(code, name):
               f"北向{hsgt_sub}({hsgt_reason})|"
               f"龙虎{lhb_sub}({lhb_reason})")
     return total, reason, ann_tags
+
+
+def get_news_catalyst_score_v2(code, name):
+    """v2.0 消息面综合分(2 源:ann 0.50 + newsfeed 0.50)。
+    hsgt/lhb 已移到资金面 v2 (get_capital_flow_score_v2)。"""
+    ann_sub, ann_reason, ann_tags = get_ann_score(code, name)
+    nf_sub, nf_reason = get_newsfeed_score(code, name)
+    total = round(ann_sub * NEWS_SUB_WEIGHTS_V2['ann'] + nf_sub * NEWS_SUB_WEIGHTS_V2['newsfeed'], 1)
+    reason = f"公告{ann_sub}({ann_reason})|新闻{nf_sub}({nf_reason})"
+    return total, reason, ann_tags
+
+
+# === v2.0 5 维评分 ===
+WEIGHT_V2 = {
+    'tech':  0.20,
+    'earn':  0.15,
+    'flow':  0.25,
+    'news':  0.20,
+    'inst':  0.20,
+}
+
+
+def compute_composite_v2(code, name, tech_score, earn_score):
+    """5 维加权综合分:技术 0.20 + 业绩 0.15 + 资金 0.25 + 消息 0.20 + 机构 0.20。
+    资金用 get_capital_flow_score_v2 (5 子分),消息用 v2 (2 源),
+    机构行为用 _init_institutional_flow + compute_institutional_score。"""
+    flow_score, flow_reason = get_capital_flow_score_v2(code)
+    news_score, news_reason, _ = get_news_catalyst_score_v2(code, name)
+    inst_score, inst_subs = compute_institutional_score_v2(normalize_code(code))
+
+    composite = round(
+        tech_score * WEIGHT_V2['tech'] +
+        earn_score * WEIGHT_V2['earn'] +
+        flow_score * WEIGHT_V2['flow'] +
+        news_score * WEIGHT_V2['news'] +
+        inst_score * WEIGHT_V2['inst'])
+    return composite, {
+        'tech': tech_score, 'earn': earn_score, 'flow': flow_score,
+        'news': news_score, 'inst': inst_score,
+        'flow_reason': flow_reason, 'news_reason': news_reason,
+        'inst_subs': inst_subs,
+    }
 
 
 # ============================================================

@@ -237,3 +237,44 @@ def score_main_force_split(code6: str, fund_flow_df: Optional[pd.DataFrame]) -> 
         score, desc = 50, '主力分单持平'
 
     return score, desc
+
+
+# ============================================================
+# 派生指标:融资余额 7 日变化率(供证伪门用)
+# ============================================================
+def compute_margin_change_pct(
+    code6: str,
+    today_df: Optional[pd.DataFrame],
+    week_ago_df: Optional[pd.DataFrame],
+) -> Optional[float]:
+    """算 code6 的融资余额 7 日变化率(%)。
+
+    返回值:
+      - 正数:融资余额上升(杠杆加仓)
+      - 负数:融资余额下降(杠杆撤退)
+      - None :任一 df 缺失/无该 code/基线为 0
+
+    字段约定(兼容 akshare `stock_margin_underlying_info_szse`):
+      标的代码 / 融资余额(元)
+    """
+    if today_df is None or week_ago_df is None:
+        return None
+    if today_df.empty or week_ago_df.empty:
+        return None
+
+    def _bal(df):
+        code_col = '_code6' if '_code6' in df.columns else '标的代码'
+        rows = df[df[code_col].astype(str).str.zfill(6) == str(code6).zfill(6)]
+        if rows.empty:
+            return None
+        bal_col = next((c for c in rows.columns if '融资余额' in str(c)), None)
+        if not bal_col:
+            return None
+        v = pd.to_numeric(rows[bal_col], errors='coerce').iloc[0] if len(rows) else None
+        return float(v) if v is not None and not pd.isna(v) else None
+
+    today_bal = _bal(today_df)
+    ago_bal = _bal(week_ago_df)
+    if today_bal is None or ago_bal is None or ago_bal <= 0:
+        return None
+    return (today_bal - ago_bal) / ago_bal * 100.0

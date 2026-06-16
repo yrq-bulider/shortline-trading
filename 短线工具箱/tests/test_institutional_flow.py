@@ -293,3 +293,67 @@ def test_split_data_missing():
     score, reason = score_main_force_split('600001', None)
     assert score == 50
     assert '缺失' in reason
+
+
+# ============================================================
+# compute_margin_change_pct 测试(7 日融资余额变化率,v2.0.1)
+# ============================================================
+def _make_margin_7d_row(code='600001', balance=1e9):
+    """构造今日/7 日前 融资余额 单行(单位:元)。"""
+    return {'标的代码': code, '融资余额': balance}
+
+
+def test_margin_change_pct_decline_15():
+    """7 日前 1e9 → 今日 8.5e8 → -15%(杠杆踩踏)。"""
+    from 短线工具箱.institutional_flow import compute_margin_change_pct
+    today = pd.DataFrame([_make_margin_7d_row(balance=8.5e8)])
+    today['_code6'] = today['标的代码']
+    ago = pd.DataFrame([_make_margin_7d_row(balance=1e9)])
+    ago['_code6'] = ago['标的代码']
+    assert compute_margin_change_pct('600001', today, ago) == pytest.approx(-15.0)
+
+
+def test_margin_change_pct_increase_8():
+    """7 日前 1e9 → 今日 1.08e9 → +8%(杠杆加仓)。"""
+    from 短线工具箱.institutional_flow import compute_margin_change_pct
+    today = pd.DataFrame([_make_margin_7d_row(balance=1.08e9)])
+    today['_code6'] = today['标的代码']
+    ago = pd.DataFrame([_make_margin_7d_row(balance=1e9)])
+    ago['_code6'] = ago['标的代码']
+    assert compute_margin_change_pct('600001', today, ago) == pytest.approx(8.0)
+
+
+def test_margin_change_pct_no_records():
+    """code 不在 today_df → None。"""
+    from 短线工具箱.institutional_flow import compute_margin_change_pct
+    today = pd.DataFrame([_make_margin_7d_row(code='600002')])
+    today['_code6'] = today['标的代码']
+    ago = pd.DataFrame([_make_margin_7d_row(balance=1e9)])
+    ago['_code6'] = ago['标的代码']
+    assert compute_margin_change_pct('600001', today, ago) is None
+
+
+def test_margin_change_pct_today_missing():
+    """today_df=None → None(降级,不影响主流程)。"""
+    from 短线工具箱.institutional_flow import compute_margin_change_pct
+    ago = pd.DataFrame([_make_margin_7d_row(balance=1e9)])
+    ago['_code6'] = ago['标的代码']
+    assert compute_margin_change_pct('600001', None, ago) is None
+
+
+def test_margin_change_pct_week_ago_missing():
+    """week_ago_df=None → None。"""
+    from 短线工具箱.institutional_flow import compute_margin_change_pct
+    today = pd.DataFrame([_make_margin_7d_row(balance=1e9)])
+    today['_code6'] = today['标的代码']
+    assert compute_margin_change_pct('600001', today, None) is None
+
+
+def test_margin_change_pct_baseline_zero():
+    """基线为 0 → None(避免除零)。"""
+    from 短线工具箱.institutional_flow import compute_margin_change_pct
+    today = pd.DataFrame([_make_margin_7d_row(balance=1e9)])
+    today['_code6'] = today['标的代码']
+    ago = pd.DataFrame([_make_margin_7d_row(balance=0)])
+    ago['_code6'] = ago['标的代码']
+    assert compute_margin_change_pct('600001', today, ago) is None

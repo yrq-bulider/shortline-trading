@@ -14,7 +14,7 @@ import pytest
 from unittest.mock import Mock, patch
 
 # 被测试模块
-from 短线工具箱.akshare_resilient import (
+from akshare_resilient import (
     call_with_fallback,
     cache_stats,
     clear_cache,

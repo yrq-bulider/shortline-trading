@@ -860,13 +860,15 @@ def _init_emotion_and_zt_pool():
 
 
 # === v2.0 机构流出缓存 + 预拉 ===
-_INST_DF = {'dzjy': None, 'margin': None, 'holder': None, 'restricted': None}
+_INST_DF = {'dzjy': None, 'margin': None, 'margin_7d_ago': None, 'holder': None, 'restricted': None}
 _INST_LOADED = False
 _FUND_FLOW_SPLIT_DF = None  # 主力分单细粒度(按需,不在 init 预拉)
 
 
 def _init_institutional_flow():
-    """v2.0:预拉 4 张机构流出表。任一失败 → 该子分 50 兜底,不影响主流程。"""
+    """v2.0.1:预拉 4 张机构流出表 + 7 日前融资余额(供证伪门算杠杆踩踏)。
+    任一失败 → 该子分 50 兜底,不影响主流程。
+    """
     global _INST_DF, _INST_LOADED
     if _INST_LOADED:
         return _INST_DF
@@ -886,6 +888,27 @@ def _init_institutional_flow():
                 print(f'[预拉] 机构-{key} 拉取为空(子分兜底 50)')
         except Exception as e:
             print(f'[预拉] 机构-{key} 失败:{type(e).__name__}(子分兜底 50)')
+
+    # v2.0.1:7 日前融资余额(供 _inst_metrics_for 算 margin_change)。
+    # 粗略减 7 日历日,周末则前进到周一(避开节假日放假窗口,误差 ≤1 日)。
+    try:
+        seven_ago = TODAY - datetime.timedelta(days=7)
+        while seven_ago.weekday() >= 5:
+            seven_ago += datetime.timedelta(days=1)
+        seven_ago_str = seven_ago.strftime('%Y%m%d')
+        df7 = fetch_margin(trade_date=seven_ago_str)
+        if df7 is not None and not df7.empty:
+            if '_code6' not in df7.columns:
+                cc = next((c for c in df7.columns if '代码' in str(c)), None)
+                if cc:
+                    df7['_code6'] = df7[cc].astype(str).str.zfill(6)
+            _INST_DF['margin_7d_ago'] = df7
+            print(f'[预拉] 机构-margin_7d_ago({seven_ago_str}) {len(df7)} 条')
+        else:
+            print(f'[预拉] 机构-margin_7d_ago({seven_ago_str}) 拉取为空(证伪门融资信号跳过)')
+    except Exception as e:
+        print(f'[预拉] 机构-margin_7d_ago 失败:{type(e).__name__}(证伪门融资信号跳过)')
+
     return _INST_DF
 
 
@@ -1659,11 +1682,15 @@ def _inst_restricted_30d(code6):
 
 
 def _inst_metrics_for(code6):
-    """v2.0:给证伪门用,组装 3 个机构行为派生指标。
-    margin_change 需要历史 df 对比,v2.0.1 再接;此处默认 None。"""
+    """v2.0.1:给证伪门用,组装 3 个机构行为派生指标。
+    margin_change 来自 _INST_DF['margin'] 与 _INST_DF['margin_7d_ago'] 对比。
+    """
+    from 短线工具箱.institutional_flow import compute_margin_change_pct
+    margin_df = _INST_DF.get('margin') if isinstance(_INST_DF, dict) else None
+    margin_7d_df = _INST_DF.get('margin_7d_ago') if isinstance(_INST_DF, dict) else None
     return {
         'dzjy_rate':     _inst_dzjy_rate(code6),
-        'margin_change': None,  # v2.0.1:从 _INST_DF['margin'] + 7日历史算
+        'margin_change': compute_margin_change_pct(code6, margin_df, margin_7d_df),
         'restricted_30d': _inst_restricted_30d(code6),
     }
 
